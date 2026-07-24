@@ -563,17 +563,20 @@ export class DesignerController {
     fidelity: 'wireframe' | 'highfi' = 'wireframe',
     { timeoutMs = 20 * 60_000, stabilityMs = 4000 }: { timeoutMs?: number; stabilityMs?: number } = {}
   ): Promise<{ ok: true; url: string; name: string; fidelity: string }> {
-    // 2026-06 home (#61, re-drifted — re-captured live 2026-06-22): the home is
-    // composer-driven, but the composer is now a plain <textarea> (`home.creator`,
-    // placeholder rotates) with a separate `button[title="Create"]` submit
-    // (`home.createButton`) — NOT the in-session contenteditable / chat-send-button
-    // (those testids were stripped from the home). So `name` becomes the seed
-    // prompt. The redesign removed the wireframe/high-fi toggle, so `fidelity` is
-    // folded into the seed as a directive (and still stored) — otherwise highfi
-    // and wireframe creates would behave identically while the session claimed a
-    // fidelity that was never applied (#66 review). The creation-type cards
-    // (Slides / Prototype / Wireframe / Animation) set the Template pill but are
-    // off the seed path. Verified live against the redesigned home.
+    // 2026-07 home (re-drifted again — re-captured live 2026-07-24, Chrome 150):
+    // the home is composer-driven, but the composer is no longer a <textarea> at
+    // all — it is a ProseMirror contenteditable div (`home.creator` =
+    // [data-testid="home-composer-input"]; placeholder rotates, never key on it)
+    // with a separate submit (`home.createButton` =
+    // [data-testid="home-composer-send"], same element as button[title="Create"]).
+    // _submitPrompt's contenteditable branch drives it. It is still NOT the
+    // in-session chat-composer-input / chat-send-button — those testids exist only
+    // in-session. So `name` becomes the seed prompt. The redesign removed the
+    // wireframe/high-fi toggle, so `fidelity` is folded into the seed as a
+    // directive (and still stored) — otherwise highfi and wireframe creates would
+    // behave identically while the session claimed a fidelity that was never
+    // applied (#66 review). The creation-type cards (carousel-type-*) set the
+    // Template pill but are off the seed path. Verified live against the home.
     //
     // `name` is the composer seed, so it must be non-empty — a whitespace-only
     // name leaves the send button disabled and would otherwise spin the full
@@ -617,10 +620,11 @@ export class DesignerController {
       : null;
     try {
       observer?.beginRun();
-      // Reuse the composer fill+submit, pointed at the HOME composer (<textarea> +
-      // "Create"), not the in-session defaults. Note button[title="Create"] is
-      // always enabled, so the enable-wait is a no-op here — the synchronous fill
-      // above is what guarantees the seed text is present before the click.
+      // Reuse the composer fill+submit, pointed at the HOME composer
+      // (contenteditable + "Create"), not the in-session defaults. Note the home
+      // Create button is always enabled, so the enable-wait is a no-op here — the
+      // synchronous fill above is what guarantees the seed text is present before
+      // the click.
       await this._submitPrompt(seed, {
         textarea: this.selectors.home.creator,
         sendButton: this.selectors.home.createButton
@@ -706,9 +710,8 @@ export class DesignerController {
     // is enabled AND the input holds the text we just wrote. In-session, "enabled"
     // already implies content (send disables when empty); but the home "Create"
     // button is always enabled, so the content check is what prevents firing an
-    // empty/wrong-target submit there (home.creator is the generic `textarea` —
-    // a stray earlier textarea, or a fill that didn't register, would otherwise
-    // submit blank and spin the navigation poll into a misleading timeout).
+    // empty submit there — a fill that didn't register would otherwise submit
+    // blank and spin the navigation poll into a misleading timeout.
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 150));
       const ready = await this.browser.evalValue<boolean>(
@@ -986,9 +989,16 @@ export class DesignerController {
     await this.browser.waitFor(this.selectors.home.projectsList).catch(() => null);
     const json = await this.browser.evalValue<Array<{ name: string | null; sub: string | null; url: string | null }>>(
       `(() => {
-        // 2026-06 redesign (#61): there's no project-card data-testid. Each
-        // project is an <a href="/design/p/<uuid>"> with the project name as its
-        // text; dedupe by uuid (a card can wrap more than one anchor).
+        // 2026-07 redesign: projects moved from a flat list of text-bearing links
+        // to a <section data-testid="projects-list"> of <tr data-testid=
+        // "project-row">. The row's <a href="/design/p/<uuid>"> is now an EMPTY
+        // overlay link — reading its text (what the 2026-06 scrape did) yields
+        // null for every project. The name now lives in the row's first cell, and
+        // is mirrored onto the anchor's aria-label. Resolve through all three, in
+        // most- to least-structured order, so this survives either layout:
+        // anchor text (old flat list) -> aria-label -> the row's first cell.
+        // Anchor-keyed, not row-keyed, because the href is the only place the
+        // uuid appears; dedupe by uuid (a row can wrap more than one anchor).
         const links = Array.from(document.querySelectorAll('a[href*="/design/p/"]'));
         const seen = new Set();
         const out = [];
@@ -997,7 +1007,13 @@ export class DesignerController {
           const m = href.match(/\\/design\\/p\\/([a-f0-9-]+)/i);
           if (!m || seen.has(m[1])) continue;
           seen.add(m[1]);
-          out.push({ name: (a.textContent || '').trim() || null, sub: null, url: href });
+          const row = a.closest('[data-testid="project-row"], tr');
+          const firstCell = row ? row.querySelector('td') : null;
+          const name =
+            (a.textContent || '').trim() ||
+            (a.getAttribute('aria-label') || '').trim() ||
+            (firstCell ? (firstCell.textContent || '').trim() : '');
+          out.push({ name: name || null, sub: null, url: href });
         }
         return out;
       })()`

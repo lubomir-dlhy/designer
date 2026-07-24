@@ -17,8 +17,12 @@ export interface Selectors {
   home: {
     creator: string;
     nameInput: string;
-    wireframeButtonText: string;
-    highFiButtonText: string;
+    // Creation-type cards, keyed by data-testid. These were `*ButtonText` label
+    // literals until 2026-07: the labels churned three times ("Product prototype"
+    // → "Prototype" → "Mobile app design") while the testids never moved, so the
+    // contract is a selector now, not text to match.
+    wireframeButton: string;
+    highFiButton: string;
     createButton: string;
     projectsList: string;
     projectCard: string;
