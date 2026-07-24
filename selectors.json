@@ -1,21 +1,21 @@
 {
   "_notes": "Captured 2026-04-17 from Chrome 147 via CDP. Override at ~/.designer/selectors.override.json. Prefer data-testid over class names — Claude's styled-components classes (sc-xxx) are regenerated on every build.",
-  "_drift": "2026-06 (issue #61) re-drifted, re-captured live 2026-06-22 from Chrome 149 (signed-in profile): the home is still composer-driven but the composer is now a plain <textarea> (placeholder ROTATES — 'Describe an app', 'Make a pitch deck', … — so never key a selector on placeholder text) with a separate submit button[title=\"Create\"]. The home no longer carries chat-composer-input / chat-send-button — those testids were stripped from the home surface and now exist only in-session. There is no project-name input or wireframe/high-fi toggle — you type an intent in the textarea and click Create. Creation-type cards are now labelled 'Prototype'/'Slides'/'Document'/'Wireframe'/'Animation' (the earlier 'Product prototype'/'Product wireframe' from auto-heal PR #75/#76 never matched reality); clicking one sets the Template pill but is off the create path, so wireframeButtonText/highFiButtonText are health-anchor drift sentinels only. Projects render as <a href=/design/p/<uuid>> with the name as text (no project-card/projects-list testid). `designer adopt` remains available to bind an already-open tab to a key.",
+  "_drift": "2026-07 re-drifted, re-captured live 2026-07-24 from Chrome 150 (signed-in profile). The home is STILL composer-driven, but every home selector that was keyed on a tag name or a visible label has moved onto a data-testid — so this capture keys on testids only. Changes vs the 2026-06 capture: (1) the composer is no longer a <textarea> at all — the home now renders ZERO textareas; it is a ProseMirror contenteditable <div data-testid=\"home-composer-input\">. _submitPrompt's contenteditable branch (synthetic paste) drives it. (2) The submit button gained data-testid=\"home-composer-send\"; it is the SAME element as button[title=\"Create\"], which is kept as a fallback. It is always enabled, so content — not enabled-ness — is the submit gate. (3) The creation-type cards moved to data-testid=\"carousel-type-<kind>\" and their LABELS churn independently ('Product prototype' → 'Prototype' → 'Mobile app design' across three captures) — key on the testid, never the label. The testids survived every rename. (4) Projects moved from a flat link list to a <section data-testid=\"projects-list\"> of <tr data-testid=\"project-row\">; the row's <a href=/design/p/<uuid>> is now an EMPTY overlay link — the name lives in the first <td> and on the anchor's aria-label, so listProjects must not read anchor text. Placeholder text still ROTATES ('Draft a one-page project brief', …) — never key a selector on it. `designer adopt` remains available to bind an already-open tab to a key.",
   "_urls": {
     "home": "https://claude.ai/design",
     "session": "https://claude.ai/design/p/{uuid}"
   },
   "login": {
-    "signedInIndicator": "[data-testid=\"chat-composer-input\"], button[title=\"Create\"]"
+    "signedInIndicator": "[data-testid=\"chat-composer-input\"], [data-testid=\"home-composer-input\"], button[title=\"Create\"]"
   },
   "home": {
-    "creator": "textarea",
-    "nameInput": "textarea",
-    "wireframeButtonText": "Wireframe",
-    "highFiButtonText": "Prototype",
-    "createButton": "button[title=\"Create\"]",
-    "projectsList": "a[href*=\"/design/p/\"]",
-    "projectCard": "a[href*=\"/design/p/\"]"
+    "creator": "[data-testid=\"home-composer-input\"]",
+    "nameInput": "[data-testid=\"home-composer-input\"]",
+    "wireframeButton": "[data-testid=\"carousel-type-wireframe\"]",
+    "highFiButton": "[data-testid=\"carousel-type-prototype\"]",
+    "createButton": "[data-testid=\"home-composer-send\"], button[title=\"Create\"]",
+    "projectsList": "[data-testid=\"projects-list\"], a[href*=\"/design/p/\"]",
+    "projectCard": "[data-testid=\"project-row\"], a[href*=\"/design/p/\"]"
   },
   "composer": {
     "promptTextarea": "[data-testid=\"chat-composer-input\"]",

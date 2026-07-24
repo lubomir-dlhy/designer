@@ -16,10 +16,6 @@ import { getSelectors } from './selectors.ts';
 // leave a stale health probe behind (the login.signedIn class of bug).
 const SEL = getSelectors();
 
-// Build a "button text starts with <literal>" matcher from a selectors.json
-// text value (the creation-card sentinels), escaping regex specials.
-const startsWithRegExp = (text: string): RegExp => new RegExp('^' + text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-
 export type AnchorCategory = 'home' | 'session' | 'share' | 'pattern';
 export type AnchorState = 'home' | 'session' | 'any';
 export type ProbeStatus = 'ok' | 'fail' | 'skip';
@@ -256,57 +252,57 @@ export const UI_ANCHORS: AnchorDef[] = [
   },
 
   // --- home page ---
-  // 2026-06 home (#61), re-captured live 2026-06-22: still composer-driven, but
-  // the composer is now a plain <textarea> (placeholder rotates — don't key on it)
-  // and the submit is button[title="Create"]. The home no longer carries
-  // chat-composer-input / chat-send-button — those testids were stripped from the
-  // home and exist only in-session. Creation = type intent in the textarea + click
-  // Create. The old home.nameInput anchor stays dropped (no equivalent);
-  // home.wireframeButton/highFiButton track the creation-type cards (now labelled
-  // "Wireframe"/"Prototype" — the earlier "Product …" labels never matched) so they
-  // still detect drift of the creation UI. Captured live from Chrome 149.
+  // 2026-07 home, re-captured live 2026-07-24 from Chrome 150 (signed-in profile)
+  // after nine consecutive daily drift PRs (#118–#126). Still composer-driven, but
+  // every home anchor is now keyed on a data-testid — the two that regressed were
+  // the two keyed on a tag name and a visible label:
+  //   * home.creator was the bare tag `textarea`; the home now renders ZERO
+  //     textareas (the composer is a ProseMirror contenteditable div).
+  //   * home.highFiButton matched the label "Prototype", which was renamed to
+  //     "Mobile app design" — the third rename of that card's label, against zero
+  //     moves of its `carousel-type-prototype` testid.
+  // So the creation-type cards are selector anchors now, not text matchers. The
+  // old home.nameInput anchor stays dropped (no equivalent). The cards remain off
+  // the create path (they only set the Template pill) — drift sentinels only.
   {
     id: 'home.creator',
     category: 'home',
-    description: 'creation composer (textarea)',
+    description: 'creation composer (contenteditable [data-testid="home-composer-input"])',
     requires: 'home',
     check: async (b) => ({ ok: await hasSelector(b, SEL.home.creator) })
   },
   {
     id: 'home.wireframeButton',
     category: 'home',
-    description: 'Wireframe creation-type card',
+    description: 'Wireframe creation-type card ([data-testid="carousel-type-wireframe"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, startsWithRegExp(SEL.home.wireframeButtonText)) })
+    check: async (b) => ({ ok: await hasSelector(b, SEL.home.wireframeButton) })
   },
   {
     id: 'home.highFiButton',
     category: 'home',
-    // Card labelled just "Prototype" (the 2026-06-19 auto-heal PR #75/#76
-    // "Product prototype" rename never matched live). Off the create path — a
-    // drift sentinel only.
-    description: 'Prototype creation-type card',
+    description: 'Prototype creation-type card ([data-testid="carousel-type-prototype"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, startsWithRegExp(SEL.home.highFiButtonText)) })
+    check: async (b) => ({ ok: await hasSelector(b, SEL.home.highFiButton) })
   },
   {
     id: 'home.createButton',
     category: 'home',
-    description: '"Create" submit button (button[title="Create"])',
+    description: 'creation submit button ([data-testid="home-composer-send"] / button[title="Create"])',
     requires: 'home',
     check: async (b) => ({ ok: await hasSelector(b, SEL.home.createButton) })
   },
   {
     id: 'home.projectsList',
     category: 'home',
-    description: 'project list (>=1 /design/p/ link)',
+    description: 'project list ([data-testid="projects-list"])',
     requires: 'home',
     check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectsList) })
   },
   {
     id: 'home.projectCard',
     category: 'home',
-    description: 'project card (a[href*="/design/p/"])',
+    description: 'project row ([data-testid="project-row"])',
     requires: 'home',
     check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectCard) })
   },
