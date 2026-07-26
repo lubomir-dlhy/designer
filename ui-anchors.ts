@@ -4,7 +4,17 @@ import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from '
 import { isCdpEnabled } from './cdp-env.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
-import { getSelectors, orderedBranches } from './selectors.ts';
+import {
+  openSwitcherExpr,
+  closeSwitcherExpr,
+  readRowsExpr,
+  rowSelector,
+  dialogPresentExpr,
+  MENU_ITEM_DELETE,
+  MENU_ITEM_DOWNLOAD,
+  type SwitcherRow
+} from './files-switcher.ts';
+import { getSelectors, orderedBranches, presenceSelector } from './selectors.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -822,6 +832,118 @@ export const UI_ANCHORS: AnchorDef[] = [
         }
       }
       return { ok: true, detail: `${files.length} file(s) detected` };
+    }
+  },
+
+  {
+    id: 'session.filesSwitcher',
+    category: 'session',
+    description: 'Pages switcher rows + per-row action menu (the deleteFile path) still resolve',
+    requires: 'session',
+    // Walks every selector `deleteFile` actuates, and STOPS at the open menu —
+    // it never clicks Delete. The daily canary is deliberately single-file
+    // (daily-health.yml), so a probe that actually deleted would destroy the
+    // surface every other session.* anchor needs.
+    //
+    // Uses the same expressions production runs (files-switcher.ts) for the
+    // file-panel.ts reason: a probe with its own copy of the DOM steps can stay
+    // green while production silently no-ops (PR #77).
+    check: async (b) => {
+      const rowsBefore = async (): Promise<SwitcherRow[]> =>
+        await b.evalValue<SwitcherRow[]>(readRowsExpr(SEL.files)).catch(() => [] as SwitcherRow[]);
+
+      if (!(await hasSelector(b, SEL.files.switcherTrigger))) {
+        // No switcher on this surface (e.g. no project open) — inconclusive,
+        // not a regression.
+        return { ok: true, status: 'skip', detail: 'files-switcher trigger absent — no project surface to probe' };
+      }
+
+      let entryCount = -1;
+      try {
+        const opened = await b.evalValue<string>(openSwitcherExpr(SEL.files)).catch(() => 'error');
+        if (opened === 'no-trigger' || opened === 'error') {
+          return { ok: false, detail: `switcher trigger present but would not open (${opened})` };
+        }
+        await sleep(700);
+        const rows = await rowsBefore();
+        entryCount = rows.length;
+        if (rows.length === 0) {
+          return { ok: true, status: 'skip', detail: 'switcher opened but listed 0 rows — inconclusive' };
+        }
+
+        // Row actions are hover-revealed and need TRUSTED input; a synthetic
+        // mouseover would not reveal them (that asymmetry is the whole reason
+        // deleteFile uses the facade).
+        const rowSel = rowSelector(SEL.files, 0);
+        await b.hover(rowSel).catch(() => null);
+        await sleep(400);
+        const moreSel = `${rowSel} ${SEL.files.rowMoreActions}`;
+        if (!(await b.isVisible(moreSel).catch(() => false))) {
+          await b.hover(rowSel).catch(() => null);
+          await sleep(500);
+        }
+        if (!(await b.isVisible(moreSel).catch(() => false))) {
+          return { ok: false, detail: `row actions did not reveal on hover (${SEL.files.rowMoreActions} not visible)` };
+        }
+
+        await b.click(moreSel).catch(() => null);
+        await sleep(600);
+        const items = await b
+          .evalValue<string[]>(
+            `(() => Array.from(document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button'))
+               .map((e) => (e.textContent || '').trim()).filter(Boolean))()`
+          )
+          .catch(() => [] as string[]);
+        if (items.length === 0) return { ok: false, detail: 'row "More actions" opened no role=menu items' };
+        if (!items.includes(MENU_ITEM_DOWNLOAD)) {
+          return { ok: false, detail: `row menu missing "${MENU_ITEM_DOWNLOAD}" (items: ${items.join(', ')})` };
+        }
+        if (!items.includes(MENU_ITEM_DELETE)) {
+          // A one-page project plausibly cannot delete its last page. The canary
+          // is single-file by policy, so treat that as degraded (the surface
+          // still resolves) rather than a daily false-fail.
+          if (entryCount === 1) {
+            return {
+              ok: true,
+              status: 'degraded',
+              detail: `single-page project — no "${MENU_ITEM_DELETE}" item offered (items: ${items.join(', ')})`
+            };
+          }
+          return { ok: false, detail: `row menu missing "${MENU_ITEM_DELETE}" (items: ${items.join(', ')})` };
+        }
+        return { ok: true, detail: `${entryCount} row(s); menu offers ${items.join(', ')}` };
+      } finally {
+        // Restoration is asserted below, not assumed: a left-open popover (or a
+        // stray Duplicate misclick making the canary multi-file) would poison
+        // every anchor that runs after this one.
+        await b.press('Escape').catch(() => null);
+        await sleep(250);
+        await b.evalValue(closeSwitcherExpr(SEL.files)).catch(() => null);
+        await sleep(250);
+      }
+    }
+  },
+
+  {
+    id: 'session.filesSwitcherRestored',
+    category: 'session',
+    description: 'no delete dialog or open switcher left behind by the switcher probe',
+    requires: 'session',
+    // Runs right after session.filesSwitcher and proves it cleaned up. Also the
+    // consumer that anchors files.confirmDialog / filesLegacy.confirmDialog —
+    // asserting the selector resolves to NOTHING is the only non-destructive way
+    // to probe a dialog that can only be raised by a real deletion.
+    check: async (b) => {
+      const dialogSel = presenceSelector(SEL.files.confirmDialog, SEL.filesLegacy?.confirmDialog);
+      const dialogOpen = await b
+        .evalValue<boolean>(dialogPresentExpr(SEL.files, SEL.filesLegacy?.confirmDialog))
+        .catch(() => false);
+      if (dialogOpen) {
+        return { ok: false, detail: `a confirm dialog is open (${dialogSel}) — the switcher probe left the page mid-flow` };
+      }
+      const rows = await b.evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`).catch(() => 0);
+      if (rows > 0) return { ok: true, status: 'degraded', detail: `switcher popover still open (${rows} rows) after probe cleanup` };
+      return { ok: true, detail: 'no dialog, switcher closed' };
     }
   }
 ];
