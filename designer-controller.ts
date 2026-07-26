@@ -22,12 +22,67 @@ import {
   type InterstitialReport
 } from './interstitials.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
+import {
+  openSwitcherExpr,
+  closeSwitcherExpr,
+  readRowsExpr,
+  rowSelector,
+  stampMenuDeleteExpr,
+  verifyConfirmDialogExpr,
+  dialogPresentExpr,
+  clearStampsExpr,
+  stampedSelector,
+  matchRows,
+  displayLabelFor,
+  STAMP_MENU_DELETE,
+  STAMP_CONFIRM_DELETE,
+  STAMP_CONFIRM_CANCEL,
+  type SwitcherRow
+} from './files-switcher.ts';
 import { unzipSync } from 'fflate';
 
 export interface ChatTurn {
   role: 'assistant' | 'user' | 'unknown';
   text: string;
 }
+
+/** Why a delete refused. Every code means NOTHING WAS DELETED except 'unverified' (unknown). */
+export type DeleteFileError =
+  | 'busy'
+  | 'wrong-project'
+  | 'switcher-unavailable'
+  | 'not-found'
+  | 'ambiguous'
+  | 'menu-unavailable'
+  | 'confirm-mismatch'
+  | 'dialog-stuck'
+  | 'snapshot-failed'
+  | 'project-changed'
+  | 'still-present'
+  | 'unverified';
+
+export type DeleteFileResult =
+  | {
+      ok: true;
+      file: string;
+      deletedLabel: string;
+      /** Switcher DISPLAY labels (no extensions) of what remains. */
+      remainingLabels: string[];
+      snapshotPath: string | null;
+      activeFileReset: boolean;
+    }
+  | { ok: true; dryRun: true; wouldDelete: string | null; ambiguous: boolean; rows: string[] }
+  | {
+      ok: false;
+      error: DeleteFileError;
+      file: string;
+      detail?: string;
+      /** Switcher labels, for 'not-found' / 'ambiguous'. */
+      candidates?: string[];
+      /** What the confirm dialog actually named, for 'confirm-mismatch'. */
+      dialogFile?: string | null;
+      snapshotPath?: string | null;
+    };
 
 export interface SessionStatus {
   key: string;
@@ -131,6 +186,10 @@ export class DesignerController {
   readonly selectors: Selectors;
   readonly browser: Browser;
   private _preSendHtml = '';
+  // Name of the exclusive verb currently driving this key's tab, or null.
+  // INVARIANT: non-null iff an exclusive verb is mid-flight (released in a
+  // `finally`, so a throw can't wedge the controller).
+  private _exclusiveOp: string | null = null;
 
   constructor({ key, headed = true }: { key?: string; headed?: boolean } = {}) {
     this.key = key || 'default';
@@ -894,6 +953,36 @@ export class DesignerController {
     return { html, screenshotPath: shotOk ? shotPath : null, url, iframeSrc };
   }
 
+  /**
+   * Serialize the verbs that DRIVE the tab (generation waits and destructive
+   * edits). CLAUDE.md has required single-flight per design tab since the
+   * observer landed, but until now that was prose only — nothing enforced it.
+   * Concurrency here is not theoretical: a delete landing inside iterate()'s
+   * pre/post listFiles window shows up as a bogus `removedFiles` entry
+   * attributed to the generation, and deleting the open file mid-run tears down
+   * the preview iframe the settle loop is reading.
+   *
+   * Scope is one controller instance = one key = one agent-browser session. Two
+   * different keys driving the same Chrome tab remain the documented
+   * cross-latch gap; narrowing that needs a cross-process lock (deferred).
+   */
+  private async _withExclusive<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    if (this._exclusiveOp) {
+      throw new Error(`designer[${this.key}] is busy: ${this._exclusiveOp} is already driving this tab`);
+    }
+    this._exclusiveOp = name;
+    try {
+      return await fn();
+    } finally {
+      this._exclusiveOp = null;
+    }
+  }
+
+  /** The exclusive verb currently driving this key's tab, or null. */
+  get busyWith(): string | null {
+    return this._exclusiveOp;
+  }
+
   async _ensureInSession(): Promise<void> {
     await this.ensureReady();
     if (await this.isInSession()) return;
@@ -909,6 +998,13 @@ export class DesignerController {
   }
 
   async iterate(
+    prompt: string,
+    opts: { file?: string; timeoutMs?: number; stabilityMs?: number; decisive?: boolean } = {}
+  ): Promise<IterateResult> {
+    return this._withExclusive('iterate', () => this._iterateBody(prompt, opts));
+  }
+
+  private async _iterateBody(
     prompt: string,
     { file, timeoutMs, stabilityMs, decisive }: { file?: string; timeoutMs?: number; stabilityMs?: number; decisive?: boolean } = {}
   ): Promise<IterateResult> {
@@ -1254,6 +1350,301 @@ export class DesignerController {
     return { ok: true, file: filename, iframeSrc: src, html, htmlBytes: html.length };
   }
 
+  /**
+   * Delete ONE named file from this key's project, or preview what would be
+   * deleted (`dryRun`). Drives the "Pages" switcher — the unified file surface
+   * present in both the plain-HTML and .dc.html canvas views.
+   *
+   * The product has no undo, so every step is written to fail CLOSED:
+   *
+   *  - ROOT-PIN. `_ensureInSession` returns early on ANY /design/p/ tab, so it
+   *    is not a pin. The project root is re-asserted before the confirm click
+   *    and on every settle poll ('wrong-project' / 'project-changed').
+   *  - REFUSE ON AMBIGUITY. Switcher rows carry no extension, so
+   *    "Canvas.dc.html" and "Canvas.html" render the same label. Two matches =>
+   *    'ambiguous' before anything is hovered — never a guess.
+   *  - VERIFY-AND-STAMP. The confirm dialog is the only surface naming the full
+   *    filename. One page expression parses its quoted name, compares with
+   *    `===`, and stamps the button to click, so the node that was verified is
+   *    the node that gets clicked (no verify-here / click-there gap).
+   *  - TRUSTED INPUT. Hover + clicks go through the facade (real CDP input);
+   *    synthetic element.click() silently no-ops on some of these menus.
+   *  - POSITIVE SETTLE. Rows exist only while the popover is open, so "no rows"
+   *    is NOT proof of deletion. Success requires the row set to shrink by
+   *    exactly one; empty/unreadable reads are inconclusive and cap out as
+   *    'unverified' rather than a false ok.
+   */
+  async deleteFile(
+    fileName: string,
+    opts: { dryRun?: boolean; snapshot?: boolean } = {}
+  ): Promise<DeleteFileResult> {
+    if (this._exclusiveOp) {
+      return { ok: false, error: 'busy', file: fileName, detail: `${this._exclusiveOp} is already driving this tab` };
+    }
+    return this._withExclusive('deleteFile', () => this._deleteFileBody(fileName, opts));
+  }
+
+  private async _deleteFileBody(
+    fileName: string,
+    { dryRun = false, snapshot = true }: { dryRun?: boolean; snapshot?: boolean } = {}
+  ): Promise<DeleteFileResult> {
+    const F = this.selectors.files;
+    const legacyDialog = this.selectors.filesLegacy?.confirmDialog;
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    await this._ensureInSession();
+
+    // --- ROOT-PIN ---
+    const stored = getSession(this.key);
+    const targetRoot = stored?.designUrl?.split('?')[0];
+    if (!targetRoot) throw new Error(`No designUrl stored for key=${this.key}. createSession or resumeSession first.`);
+    const pinToProject = async (): Promise<boolean> => {
+      if ((await this.currentUrl()).split('?')[0] === targetRoot) return true;
+      await this.openGuarded(stored!.designUrl!);
+      await this.browser.waitLoad('load').catch(() => null);
+      await sleep(1200);
+      return (await this.currentUrl()).split('?')[0] === targetRoot;
+    };
+    if (!(await pinToProject())) {
+      return { ok: false, error: 'wrong-project', file: fileName, detail: `tab is not on ${targetRoot}` };
+    }
+
+    // Capture the active file BEFORE mutating: the app may rewrite ?file= as a
+    // side effect of the delete, so a post-hoc read reports the wrong file.
+    const fileParamOf = (u: string): string | null => {
+      try {
+        const raw = new URL(u).searchParams.get('file');
+        return raw === null ? null : decodeURIComponent(raw.replace(/\+/g, ' '));
+      } catch {
+        return null;
+      }
+    };
+    const activeFileBefore = fileParamOf(await this.currentUrl());
+
+    const readRows = async (): Promise<SwitcherRow[] | null> =>
+      await this.browser.evalValue<SwitcherRow[]>(readRowsExpr(F)).catch(() => null);
+    const closeSwitcher = async () => {
+      await this.browser.evalValue(closeSwitcherExpr(F)).catch(() => null);
+    };
+    const clearStamps = async () => {
+      await this.browser.evalValue(clearStampsExpr()).catch(() => null);
+    };
+
+    // --- RESOLVE (identical path for dry-run and delete, so a preview can
+    // never disagree with the action it is previewing) ---
+    const resolve = async (): Promise<
+      { ok: true; rows: SwitcherRow[]; matches: number[] } | { ok: false; error: 'switcher-unavailable' }
+    > => {
+      const opened = await this.browser.evalValue<string>(openSwitcherExpr(F)).catch(() => 'error');
+      if (opened === 'no-trigger' || opened === 'error') return { ok: false, error: 'switcher-unavailable' };
+      await sleep(700);
+      const rows = await readRows();
+      if (!rows) return { ok: false, error: 'switcher-unavailable' };
+      return { ok: true, rows, matches: matchRows(rows, fileName) };
+    };
+
+    let resolved = await resolve();
+    if (!resolved.ok) return { ok: false, error: 'switcher-unavailable', file: fileName };
+    if (resolved.matches.length === 0) {
+      await closeSwitcher();
+      return { ok: false, error: 'not-found', file: fileName, candidates: resolved.rows.map((r) => r.label) };
+    }
+    if (resolved.matches.length > 1) {
+      await closeSwitcher();
+      return {
+        ok: false,
+        error: 'ambiguous',
+        file: fileName,
+        detail: 'two or more files share this display label; the switcher hides extensions',
+        candidates: resolved.matches.map((i) => resolved.ok ? resolved.rows[i]!.label : '')
+      };
+    }
+
+    if (dryRun) {
+      const rows = resolved.rows.map((r) => r.label);
+      await closeSwitcher();
+      return { ok: true, dryRun: true, wouldDelete: rows[resolved.matches[0]!] ?? null, ambiguous: false, rows };
+    }
+
+    // --- SNAPSHOT (blocking precondition; there is no undo) ---
+    let snapshotPath: string | null = null;
+    if (snapshot) {
+      await closeSwitcher();
+      const fetched = await this.fetchFile(fileName).catch(() => null);
+      if (!fetched?.ok || !fetched.htmlBytes) {
+        return {
+          ok: false,
+          error: 'snapshot-failed',
+          file: fileName,
+          detail: fetched?.error || 'served HTML was empty; re-run with snapshot:false to delete anyway'
+        };
+      }
+      const dir = sessionDir(this.key);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      snapshotPath = path.join(dir, `deleted-${stamp}-${fileName.replace(/[^\w.-]+/g, '_')}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(snapshotPath, fetched.html);
+      // fetchFile navigates (openFile) — re-pin and re-resolve before acting.
+      if (!(await pinToProject())) return { ok: false, error: 'wrong-project', file: fileName, snapshotPath };
+      resolved = await resolve();
+      if (!resolved.ok) return { ok: false, error: 'switcher-unavailable', file: fileName, snapshotPath };
+      if (resolved.matches.length !== 1) {
+        await closeSwitcher();
+        return {
+          ok: false,
+          error: resolved.matches.length === 0 ? 'not-found' : 'ambiguous',
+          file: fileName,
+          snapshotPath,
+          candidates: resolved.rows.map((r) => r.label)
+        };
+      }
+    }
+
+    const preCount = resolved.rows.length;
+    const preLabelCount = resolved.matches.length; // == 1 here
+    const rowIndex = resolved.matches[0]!;
+
+    try {
+      // --- REVEAL + OPEN MENU (trusted input only) ---
+      const rowSel = rowSelector(F, rowIndex);
+      await this.browser.hover(rowSel).catch(() => null);
+      await sleep(400);
+      const moreSel = `${rowSel} ${F.rowMoreActions}`;
+      if (!(await this.browser.isVisible(moreSel).catch(() => false))) {
+        await this.browser.hover(rowSel).catch(() => null); // one retry: pointer state can be lost between spawns
+        await sleep(500);
+      }
+      if (!(await this.browser.isVisible(moreSel).catch(() => false))) {
+        return { ok: false, error: 'menu-unavailable', file: fileName, detail: 'row actions did not reveal on hover', snapshotPath };
+      }
+      await this.browser.click(moreSel);
+      await sleep(600);
+
+      const stamped = await this.browser.evalValue<string>(stampMenuDeleteExpr()).catch(() => 'error');
+      if (stamped !== 'stamped') {
+        await this.browser.press('Escape').catch(() => null);
+        return { ok: false, error: 'menu-unavailable', file: fileName, detail: `menu did not offer exactly one Delete (${stamped})`, snapshotPath };
+      }
+      await this.browser.click(stampedSelector(STAMP_MENU_DELETE));
+      await sleep(700);
+
+      // --- VERIFY-AND-STAMP THE DIALOG ---
+      const verdict = await this.browser
+        .evalValue<{ found: boolean; dialogFile: string | null; matched: boolean; stamped: string | null }>(
+          verifyConfirmDialogExpr(F, legacyDialog, fileName)
+        )
+        .catch(() => null);
+      if (!verdict?.found || verdict.stamped === null) {
+        await this.browser.press('Escape').catch(() => null);
+        return {
+          ok: false,
+          error: 'confirm-mismatch',
+          file: fileName,
+          dialogFile: verdict?.dialogFile ?? null,
+          detail: verdict?.found ? 'confirm dialog button could not be identified' : 'confirm dialog did not appear',
+          snapshotPath
+        };
+      }
+      if (!verdict.matched) {
+        // The dialog names a DIFFERENT file — cancel and prove the dialog closed.
+        await this.browser.click(stampedSelector(STAMP_CONFIRM_CANCEL)).catch(() => null);
+        await sleep(600);
+        let stillOpen = await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true);
+        if (stillOpen) {
+          await this.browser.press('Escape').catch(() => null);
+          await sleep(400);
+          stillOpen = await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true);
+        }
+        return {
+          ok: false,
+          error: stillOpen ? 'dialog-stuck' : 'confirm-mismatch',
+          file: fileName,
+          dialogFile: verdict.dialogFile,
+          detail: stillOpen
+            ? 'dialog named the wrong file AND would not dismiss — nothing was clicked beyond Cancel; check the tab by hand'
+            : `dialog named ${JSON.stringify(verdict.dialogFile)}, not ${JSON.stringify(fileName)}; nothing deleted`,
+          snapshotPath
+        };
+      }
+
+      // Last guard before the irreversible click.
+      if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
+        await this.browser.press('Escape').catch(() => null);
+        return { ok: false, error: 'project-changed', file: fileName, detail: 'tab left the bound project mid-flow', snapshotPath };
+      }
+      await this.browser.click(stampedSelector(STAMP_CONFIRM_DELETE));
+
+      // --- POSITIVE SETTLE ---
+      const deadline = Date.now() + 15_000;
+      let consecutive = 0;
+      let lastGoodRows: SwitcherRow[] | null = null;
+      let sawTargetPresent = false;
+      while (Date.now() < deadline) {
+        await sleep(600);
+        if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
+          return { ok: false, error: 'project-changed', file: fileName, detail: 'tab navigated away during settle', snapshotPath };
+        }
+        await this.browser.evalValue(openSwitcherExpr(F)).catch(() => null);
+        const rows = await readRows();
+        // Inconclusive: the popover is shut or unreadable. Counts toward
+        // NEITHER success nor failure — an empty read is exactly what a
+        // never-happened delete looks like.
+        if (!rows || rows.length === 0) {
+          consecutive = 0;
+          continue;
+        }
+        const stillThere = matchRows(rows, fileName).length;
+        if (stillThere === preLabelCount) sawTargetPresent = true;
+        if (rows.length === preCount - 1 && stillThere === preLabelCount - 1) {
+          consecutive += 1;
+          lastGoodRows = rows;
+          if (consecutive >= 2) break;
+        } else {
+          consecutive = 0;
+        }
+      }
+
+      if (consecutive < 2 || !lastGoodRows) {
+        return {
+          ok: false,
+          error: sawTargetPresent ? 'still-present' : 'unverified',
+          file: fileName,
+          detail: sawTargetPresent
+            ? 'the row was still listed when the settle window expired'
+            : 'could not read the file list after the click — deletion NOT confirmed; re-check with a dry run',
+          snapshotPath
+        };
+      }
+
+      // --- POST-SUCCESS ---
+      let activeFileReset = false;
+      if (activeFileBefore !== null && activeFileBefore === fileName) {
+        // The tab (and the STORED url) point at a file that no longer exists;
+        // leaving designUrl as-is would resume every future session onto it.
+        await this.openGuarded(targetRoot).catch(() => null);
+        await this.browser.waitLoad('load').catch(() => null);
+        const strip = (u?: string | null) => (u ? u.split('?')[0] : u);
+        upsertSession(this.key, {
+          designUrl: strip(stored!.designUrl) as string,
+          lastUrl: strip(stored!.lastUrl) ?? undefined
+        } as Partial<StoredSession>);
+        activeFileReset = true;
+      }
+      appendHistory(this.key, { kind: 'file-delete', file: fileName, at: new Date().toISOString() });
+      return {
+        ok: true,
+        file: fileName,
+        deletedLabel: displayLabelFor(fileName),
+        remainingLabels: lastGoodRows.map((r) => r.label),
+        snapshotPath,
+        activeFileReset
+      };
+    } finally {
+      await clearStamps();
+      await closeSwitcher();
+    }
+  }
+
   async getChatTurns(): Promise<ChatTurn[]> {
     return (
       (await this.browser
@@ -1279,6 +1670,13 @@ export class DesignerController {
   }
 
   async ask(
+    prompt: string,
+    opts: { file?: string; timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}
+  ): Promise<AskResult> {
+    return this._withExclusive('ask', () => this._askBody(prompt, opts));
+  }
+
+  private async _askBody(
     prompt: string,
     { file, timeoutMs = 5 * 60_000, stabilityMs = 2500, pollMs = 1000 }: { file?: string; timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}
   ): Promise<AskResult> {

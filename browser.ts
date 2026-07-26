@@ -49,7 +49,14 @@ export interface Browser {
   cookies(): Promise<CookieInfo[]>;
   snapshot<T = unknown>(opts?: SnapshotOptions): Promise<T>;
   snapshotText(opts?: SnapshotOptions): Promise<string>;
+  // Trusted-input actuation. agent-browser dispatches these over CDP as real
+  // input events. Destructive flows MUST use these, never an `evalValue` that
+  // calls `element.click()`: the 2026-07-26 delete probe found synthetic clicks
+  // open some of the file-row menus and silently no-op on others. (Reading and
+  // attribute-stamping via evalValue is fine — that is a DOM write, not a click.)
   click(sel: string): Promise<string>;
+  /** Real pointer move — required to reveal the hover-only per-row file actions. */
+  hover(sel: string): Promise<string>;
   fill(sel: string, text: string): Promise<string>;
   type(sel: string, text: string): Promise<string>;
   press(key: string): Promise<string>;
@@ -162,6 +169,7 @@ export function createBrowser({
       return run(args);
     },
     click: (sel) => run(['click', sel]),
+    hover: (sel) => run(['hover', sel]),
     fill: (sel, text) => run(['fill', sel, text]),
     type: (sel, text) => run(['type', sel, text]),
     press: (key) => run(['press', key]),
