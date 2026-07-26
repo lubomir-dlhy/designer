@@ -453,3 +453,46 @@ test('project names are chosen by source priority, not string length', () => {
   assert.ok(!/sort\(\(x, y\) => x\.length - y\.length\)/.test(scrape), 'shortest-wins heuristic is back');
   assert.match(scrape, /NAME_SOURCES = \['rowCell', 'ariaLabel', 'anchorText'\]/, 'source priority order changed');
 });
+
+// --- Seam 1: redaction is the default, not per-field opt-in ---
+
+const LEAK_UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+test('scrubDeep redacts the fields that shipped raw (diagnostics.url, results[].detail)', async () => {
+  const { scrubDeep } = await import('../scripts/ci-health.ts');
+  // Shape lifted from a REAL published artifact (health/drift-2026-07-24) that
+  // leaked a project UUID in both of these fields.
+  const payload = {
+    diagnostics: { url: 'https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff?file=index.html', htmlBytes: 68796 },
+    health: {
+      results: [
+        { id: 'pattern.sessionUrl', status: 'ok', detail: 'url=https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff?file=index.html' }
+      ]
+    }
+  };
+  const out = scrubDeep(payload);
+  assert.doesNotMatch(JSON.stringify(out), LEAK_UUID, 'a project UUID survived the publish boundary');
+  assert.doesNotMatch(out.diagnostics.url, /\?file=/, 'query string must be stripped');
+  // Conservation: auto-heal keys on these, so scrubbing must not touch them.
+  assert.equal(out.health.results[0].id, 'pattern.sessionUrl');
+  assert.equal(out.health.results[0].status, 'ok');
+  assert.equal(out.diagnostics.htmlBytes, 68796, 'non-string values must pass through');
+});
+
+test('scrubDeep covers a field nobody remembered to opt in', async () => {
+  const { scrubDeep } = await import('../scripts/ci-health.ts');
+  // The point of the seam: a NEW field is redacted without being wired up.
+  const out = scrubDeep({ someFutureField: { nested: ['/Users/alice/x', 'https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff'] } });
+  assert.doesNotMatch(JSON.stringify(out), LEAK_UUID);
+  assert.doesNotMatch(JSON.stringify(out), /\/Users\/(?!<redacted>)[^/"\s]+/);
+});
+
+test('scrubDeep is safe on the degenerate shapes (null diagnostics, empty results)', async () => {
+  const { scrubDeep } = await import('../scripts/ci-health.ts');
+  assert.deepEqual(scrubDeep({ diagnostics: null, health: { results: [] } }), { diagnostics: null, health: { results: [] } });
+});
+
+test('the artifact is written through the scrubber, not the raw payload', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/ci-health.ts'), 'utf8');
+  assert.match(src, /writeFileSync\(outFile, JSON\.stringify\(scrubDeep\(payload\)/, 'the write boundary must scrub');
+});

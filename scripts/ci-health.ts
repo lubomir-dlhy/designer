@@ -108,6 +108,33 @@ function todayUtc(): string {
 export const scrubForTest = (s: string): string => scrubArtifact(s);
 
 /**
+ * Scrub EVERY string in a payload, recursively.
+ *
+ * The artifact used to be scrubbed field by field — `chromeUrl`, `canary`,
+ * `homeNav` and the `doctor` block each opted in by hand — so a field that
+ * forgot to opt in published raw. Two did: `diagnostics.url` and
+ * `health.results[].detail` both shipped unredacted project UUIDs (and the
+ * `?file=` query the scrubber exists to strip) in every world-downloadable
+ * artifact. Scrubbing the assembled payload instead makes redaction the
+ * DEFAULT, so the next field added is covered without anyone remembering.
+ *
+ * Safe over the whole tree: scrubArtifact is idempotent (verified across URL,
+ * home-path and already-scrubbed inputs), and it only rewrites UUID path
+ * segments, URL query/fragments, and home directories — none of which occur in
+ * the anchor `id` / `status` values auto-heal reads back out of this artifact.
+ */
+export function scrubDeep<T>(value: T): T {
+  if (typeof value === 'string') return scrubArtifact(value) as unknown as T;
+  if (Array.isArray(value)) return value.map(scrubDeep) as unknown as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = scrubDeep(v);
+    return out as unknown as T;
+  }
+  return value;
+}
+
+/**
  * The probe's verdict, as three distinct outcomes rather than a boolean.
  *
  *   ok         — anchors green AND the tooling half actually ran
@@ -514,7 +541,9 @@ async function main(): Promise<void> {
   const outDir = path.join(REPO_ROOT, 'artifacts', 'health');
   ensureDir(outDir);
   const outFile = path.join(outDir, artifactName);
-  fs.writeFileSync(outFile, JSON.stringify(payload, null, 2));
+  // Single privacy boundary: everything published goes through the scrubber
+  // here, rather than each field opting in individually upstream.
+  fs.writeFileSync(outFile, JSON.stringify(scrubDeep(payload), null, 2));
 
   // Streak tracker — input to the auto-heal workflow's N=2 gate. Dedups
   // across phases (a pattern.* anchor probed in both home + session counts
