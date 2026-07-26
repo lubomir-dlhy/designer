@@ -1027,7 +1027,12 @@ export class DesignerController {
           const raw = a.getAttribute('href') || '';
           let pathname = raw;
           try { pathname = new URL(a.href || raw, document.baseURI).pathname; } catch (e) { /* keep raw */ }
-          const m = pathname.match(/^\\/design\\/p\\/([0-9a-f-]{8,})$/i);
+          // Optional trailing slash, but NOT arbitrary subroutes. The review
+          // proposed (?:\\/|$), which would also admit /design/p/<uuid>/settings —
+          // re-opening the decoy vector an earlier round closed, where a nav or
+          // breadcrumb link outside any row becomes a phantom project named
+          // after its own link text.
+          const m = pathname.match(/^\\/design\\/p\\/([0-9a-f-]{8,})\\/?$/i);
           return m ? m[1] : null;
         };
 

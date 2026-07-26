@@ -172,7 +172,12 @@ test('login.signedIn degrades on the weaker Create-button marker instead of clai
   const r = await anchor('login.signedIn').check(b, 'https://claude.ai/design');
   assert.equal(r.ok, true);
   assert.equal(r.status, 'degraded');
-  assert.doesNotMatch(r.detail, /designer setup/, 'must never send the user to re-login on a marker rot');
+  // NOT a hard ban on naming `designer setup` here: this branch concedes the
+  // marker is weak evidence, so forbidding the words forced the text to assert
+  // more certainty than the check has. What must hold is that re-capture is
+  // named FIRST and setup only as a conditional secondary.
+  assert.match(r.detail, /re-capture login\.signedInIndicator/i, 'must lead with re-capture, not re-login');
+  assert.match(r.detail, /WEAK evidence/, 'must state the marker is weak evidence rather than assert authentication');
 });
 
 // --- branch resolution helpers ---
@@ -606,4 +611,17 @@ test('the direct-invocation guard compares realpaths on both sides', () => {
     assert.match(src, /realpathSync\(fileURLToPath\(import\.meta\.url\)\)/, `${f}: import side not realpath'd`);
     assert.match(src, /fs\.realpathSync\(process\.argv\[1\]\)/, `${f}: argv side not realpath'd`);
   }
+});
+
+test('idOf admits a trailing slash but still rejects project subroutes', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
+  const m = src.match(/pathname\.match\(\/(.+?)\/i\)/);
+  assert.ok(m, 'idOf regex not found — update this test');
+  // The pattern lives inside a TS template literal, so a source `\\\\/` reaches
+  // the page as `\/`. Collapse it back so the real boundary is exercised.
+  const re = new RegExp(m[1].replace(/\\\\\//g, '/'), 'i');
+  const uuid = '11111111-1111-1111-1111-111111111111';
+  assert.ok(re.test(`/design/p/${uuid}`), 'bare project path must match');
+  assert.ok(re.test(`/design/p/${uuid}/`), 'trailing slash must match (#F8)');
+  assert.ok(!re.test(`/design/p/${uuid}/settings`), 'subroutes must NOT match — they become phantom projects');
 });

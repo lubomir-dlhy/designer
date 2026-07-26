@@ -292,7 +292,7 @@ export const UI_ANCHORS: AnchorDef[] = [
           return {
             ok: true,
             status: 'degraded',
-            detail: `signed-in marker matched only the superseded branch (${legacyMarker}); canonical composer testids absent. Re-capture login.signedInIndicator — do NOT re-login.`
+            detail: `signed-in marker matched only the superseded branch (${legacyMarker}); canonical composer testids absent. This branch is WEAK evidence of authentication (an action button could plausibly render on an unauthenticated shell), so treat sign-in as unconfirmed: re-capture login.signedInIndicator first, and only if the composer is genuinely absent while signed in does \`designer setup\` apply.`
           };
         }
         // The signed-in marker is absent. Before reporting "signed out" (which
