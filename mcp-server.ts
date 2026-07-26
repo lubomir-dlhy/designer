@@ -116,6 +116,35 @@ server.registerTool(
 );
 
 server.registerTool(
+  'designer_files_delete',
+  {
+    description:
+      "Delete ONE file from the open project — for clearing out superseded variants (v1/v2/scratch pages) once a direction is chosen. DEFAULTS TO A DRY RUN: call with confirm=false (or omit it) to see exactly what would be deleted, then repeat with confirm=true to actually delete. There is NO undo in claude.ai/design, so by default the file's HTML is snapshotted into the session dir first and the delete is ABORTED if that snapshot fails (pass snapshot=false to override). `filename` must be the full name including extension (e.g. 'landing-v2.html'); the tool refuses with error='ambiguous' when two files share a display label, and with error='confirm-mismatch' when the product's confirm dialog names a different file than you asked for — in both cases nothing is deleted. On success, `remainingLabels` are the switcher's DISPLAY labels (extensions stripped), not filenames. Every error code except 'unverified' guarantees nothing was deleted; 'unverified' means the click landed but the result could not be read — re-run with confirm=false to see the current list. Deleting a file is destructive and not idempotent: re-running after success returns error='not-found'.",
+    inputSchema: {
+      key: z.string().optional(),
+      filename: z.string(),
+      confirm: z.boolean().optional(),
+      snapshot: z.boolean().optional()
+    },
+    annotations: {
+      title: 'Delete a design file',
+      destructiveHint: true,
+      idempotentHint: false,
+      readOnlyHint: false,
+      openWorldHint: true
+    }
+  },
+  async ({ key, filename, confirm, snapshot }) => {
+    const c = getController(key);
+    // One code path for preview and action — a dry run that resolved against a
+    // different surface than the delete could report "nothing to delete" and
+    // then delete something.
+    if (confirm !== true) return textResult(await c.deleteFile(filename, { dryRun: true }));
+    return textResult(await c.deleteFile(filename, { snapshot: snapshot !== false }));
+  }
+);
+
+server.registerTool(
   'designer_snapshot',
   {
     description:

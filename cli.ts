@@ -156,6 +156,30 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(detail, null, 2));
       break;
     }
+    case 'files-delete': {
+      // `--yes` takes no value, but parseFlags is generic: in
+      // `files-delete --yes name.html` it swallows the filename as the flag's
+      // value. Push it back rather than failing with a bogus Usage error.
+      if (typeof flags.yes === 'string') {
+        flags._.unshift(flags.yes);
+        flags.yes = true;
+      }
+      const filename = flags._.join(' ');
+      if (!filename) throw new Error('Usage: designer files-delete "<name>.html" [--yes] --key k');
+      const c = new DesignerController({ key });
+      if (flags.yes !== true) {
+        const preview = await c.deleteFile(filename, { dryRun: true });
+        console.log(JSON.stringify(preview, null, 2));
+        console.error(
+          `[designer] Dry run — nothing deleted. Re-run with --yes to delete "${filename}" (there is no undo; the file is snapshotted to the session dir first).`
+        );
+        break;
+      }
+      const r = await c.deleteFile(filename, { snapshot: flags.snapshot !== false });
+      console.log(JSON.stringify(r, null, 2));
+      if (!r.ok) process.exitCode = 1;
+      break;
+    }
     case 'open-file': {
       const filename = flags._.join(' ');
       if (!filename) throw new Error('Usage: designer open-file "<name>.html" --key k');
@@ -369,6 +393,9 @@ File / project introspection:
   open-file "<name>.html" [--key k]            switch open file
   fetch "<name>.html" [--key k] [--out p]      fetch served HTML to disk
 
+Destructive (dry-run by default; no undo in claude.ai/design):
+  files-delete "<name>.html" [--yes] [--key k] delete one file (snapshots it first)
+
 Exit / promotion:
   handoff [--key k] [--file "<name>.html"]     fetch export zip → project/ + decision-record.md
   tasting [--key k]                            local full-viewport switcher for the latest bundle
@@ -541,6 +568,21 @@ Flags: --key <k>
 Note: the scrape is flat-only. Files nested under folders (directions/, variants/) are
 invisible to this command. The handoff bundle is always folder-aware — use that for
 authoritative file listing.`,
+
+  'files-delete': `designer files-delete "<name>.html" — delete ONE file from the current project.
+
+Flags: --key <k>  --yes (actually delete; without it this is a dry run)  --snapshot=false (skip the backup)
+
+Put the filename BEFORE --yes. Dry run (no --yes) prints what would be deleted and exits 0;
+with --yes the exit code is 0 on success, 1 on any refusal.
+
+There is no undo in claude.ai/design, so the file's served HTML is written to the session dir
+before the delete and the delete is ABORTED if that snapshot fails (--snapshot=false overrides).
+
+Refusals that guarantee nothing was deleted: not-found, ambiguous (two files share a display
+label — the switcher hides extensions), confirm-mismatch (the product's dialog named a different
+file), menu-unavailable, snapshot-failed, wrong-project, busy. 'unverified' means the click landed
+but the file list could not be read afterwards — re-run the dry run to see the current state.`,
 
   projects: `designer projects — list all Claude design projects visible on /design home.
 
