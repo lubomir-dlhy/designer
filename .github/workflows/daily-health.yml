@@ -155,7 +155,11 @@ jobs:
         # Gated on the probe's own verdict, not on step outcome. A tooling fault
         # (doctor never launched) used to exit 0 and land here, auto-closing a
         # legitimate open drift PR while half the probe was broken.
-        if: steps.probe.outputs.verdict == 'ok'
+        #
+        # Also requires zero degraded anchors: an all-degraded run still yields
+        # verdict `ok` (the tool works), and closing the drift PR that documents
+        # the rot is precisely the wrong response to unrepaired drift.
+        if: steps.probe.outputs.verdict == 'ok' && steps.probe.outputs.degraded == '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TODAY: ${{ steps.stamp.outputs.date }}

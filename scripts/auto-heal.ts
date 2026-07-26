@@ -35,6 +35,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { REPO_ROOT } from '../repo-root.ts';
 import { createBrowser } from '../browser.ts';
 import { canPatch, findAnchor, patchSelector } from './anchor-patcher.ts';
+import { isFailing } from '../ui-anchors.ts';
 import { getSelectors } from '../selectors.ts';
 
 const SEL = getSelectors();
@@ -912,7 +913,10 @@ async function heal(anchorId: string): Promise<void> {
     ghOutput('reason', 're-probe-anchor-missing');
     return;
   }
-  const nonOk = entriesForAnchor.filter((r) => r.status !== 'ok');
+  // `degraded` means the anchor WORKS (via a superseded branch) — the patch did
+  // its job. Treating anything !== 'ok' as failure reverted a working patch and
+  // then reported the heal as unsuccessful.
+  const nonOk = entriesForAnchor.filter((r) => isFailing(r.status));
   if (nonOk.length > 0) {
     console.log(
       `[auto-heal heal] re-probe shows ${anchorId} still failing in ${nonOk.length}/${entriesForAnchor.length} phase(s) — reverting`

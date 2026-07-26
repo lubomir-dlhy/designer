@@ -554,3 +554,34 @@ test('every selector is either anchored in ui-anchors.ts or explicitly exempt', 
   }
   assert.deepEqual(unanchored, [], `selectors with no health anchor and no documented exemption: ${unanchored.join(', ')}`);
 });
+
+// --- Theme B: ProbeStatus consumers must be total over the union ---
+
+test('isFailing / isWorking classify every ProbeStatus, and degraded is working', async () => {
+  const { isFailing, isWorking } = await import('../ui-anchors.ts');
+  assert.equal(isFailing('fail'), true);
+  for (const s of ['ok', 'degraded', 'skip']) assert.equal(isFailing(s), false, `${s} must not read as failing`);
+  // The F10 defect: degraded means the anchor WORKS via a superseded branch, so
+  // a re-probe returning it must not revert a patch that succeeded.
+  assert.equal(isWorking('degraded'), true);
+  assert.equal(isWorking('ok'), true);
+  assert.equal(isWorking('fail'), false);
+  assert.equal(isWorking('skip'), false);
+});
+
+test('auto-heal judges its re-probe with the shared predicate, not a literal !== ok', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/auto-heal.ts'), 'utf8');
+  assert.ok(!/status !== 'ok'/.test(src), "auto-heal still uses `status !== 'ok'` — degraded would revert a working patch");
+  assert.match(src, /isFailing\(r\.status\)/, 'auto-heal must consume the shared predicate');
+});
+
+test('a degraded run does not close the drift PR that documents the rot', () => {
+  const wf = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/daily-health.yml'), 'utf8');
+  const gate = wf.slice(wf.indexOf('Close stale drift PRs on green'));
+  assert.match(gate, /steps\.probe\.outputs\.degraded == '0'/, 'stale-close must be withheld while anchors are degraded');
+});
+
+test('the degraded count is published for the workflow to gate on', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/ci-health.ts'), 'utf8');
+  assert.match(src, /ghOutput\('degraded', String\(counts\.degraded\)\)/);
+});

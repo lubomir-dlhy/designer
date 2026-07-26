@@ -24,6 +24,39 @@ export type AnchorState = 'home' | 'session' | 'any';
 // this existed the legacy branch was packed into the same comma-OR selector and
 // simply kept the anchor green, hiding the canonical rot from the daily probe.
 export type ProbeStatus = 'ok' | 'degraded' | 'fail' | 'skip';
+
+/**
+ * Typed predicates over ProbeStatus, exported so every consumer classifies the
+ * same way. Written as exhaustive switches: adding a status value makes these a
+ * COMPILE error instead of a silent misclassification somewhere downstream.
+ *
+ * Widening the union to include `degraded` without making its consumers total is
+ * how two separate decision points went wrong — a verdict that ignored it, and a
+ * re-probe that reverted a working patch because the anchor was not literally
+ * 'ok'.
+ */
+export function isFailing(s: ProbeStatus): boolean {
+  switch (s) {
+    case 'fail':
+      return true;
+    case 'ok':
+    case 'degraded':
+    case 'skip':
+      return false;
+  }
+}
+
+/** True when the anchor is working — including via a superseded selector. */
+export function isWorking(s: ProbeStatus): boolean {
+  switch (s) {
+    case 'ok':
+    case 'degraded':
+      return true;
+    case 'fail':
+    case 'skip':
+      return false;
+  }
+}
 export type ProbePhase = 'home' | 'session';
 
 export interface ProbeResult {

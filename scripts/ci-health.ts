@@ -587,6 +587,12 @@ async function main(): Promise<void> {
   }
   console.log(`[ci-health] wrote ${path.relative(REPO_ROOT, outFile)}`);
 
+  // Published so the workflow can refuse to close a drift PR while anchors are
+  // running on superseded selectors. Deliberately NOT folded into the verdict:
+  // degraded means the tool still works, and making it non-`ok` would fail the
+  // daily job for a working system — the same trap as gating on doctor's exit
+  // code. It withholds the green-only cleanup action instead.
+  ghOutput('degraded', String(counts.degraded));
   const verdict = probeVerdict({
     anchorFail: fail,
     doctorSpawnError: doctor.spawnError,
