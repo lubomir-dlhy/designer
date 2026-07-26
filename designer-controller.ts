@@ -1025,17 +1025,30 @@ export class DesignerController {
           return m ? m[1] : null;
         };
 
-        const nameFrom = (a) => {
+        // Name candidates, tagged with WHERE they came from. Source is what
+        // decides, not string length: a control link ("Open", "Settings") is
+        // shorter than the real name, so a shortest-wins rule picks the button
+        // label on exactly the multi-link row this function exists to handle.
+        //
+        // Priority, most to least authoritative:
+        //   rowCell    — the row's name column; shared by every link in the row,
+        //                so multi-link rows converge on one answer
+        //   ariaLabel  — mirrors the name on the overlay link
+        //   anchorText — the legacy flat-list layout, where the name WAS the
+        //                link text; also the most likely to be a control label,
+        //                hence last.
+        const NAME_SOURCES = ['rowCell', 'ariaLabel', 'anchorText'];
+        const candidatesFrom = (a) => {
           // closest() with a comma list returns the NEAREST ancestor matching
           // EITHER branch — so a nested <tr> would beat the real project row.
           // Try the specific row first, only then the generic tag.
           const row = a.closest(ROW_SEL) || a.closest('tr');
           const firstCell = row ? row.querySelector('td') : null;
-          return (
-            (a.textContent || '').trim() ||           // old flat-list layout
-            (a.getAttribute('aria-label') || '').trim() ||
-            (firstCell ? (firstCell.textContent || '').trim() : '')
-          );
+          return {
+            rowCell: firstCell ? (firstCell.textContent || '').trim() : '',
+            ariaLabel: (a.getAttribute('aria-label') || '').trim(),
+            anchorText: (a.textContent || '').trim()
+          };
         };
 
         // Collect ALL candidates per uuid before choosing. The previous version
@@ -1048,21 +1061,21 @@ export class DesignerController {
           const id = idOf(a);
           if (!id) continue;
           const href = a.href || a.getAttribute('href') || '';
-          const entry = byId.get(id) || { url: href, names: [] };
+          const entry = byId.get(id) || { url: href, sources: {} };
           if (!entry.url) entry.url = href;
-          const n = nameFrom(a);
-          if (n) entry.names.push(n);
+          const c = candidatesFrom(a);
+          // First non-empty value per source wins; later links only fill gaps,
+          // so one link's missing aria-label cannot erase another's.
+          for (const k of NAME_SOURCES) if (!entry.sources[k] && c[k]) entry.sources[k] = c[k];
           byId.set(id, entry);
         }
 
         const out = [];
         for (const [, entry] of byId) {
-          // Prefer the shortest non-empty candidate: decorated variants tend to
-          // ADD to the bare name ("Open Acme Redesign", "Acme Redesign, edited
-          // yesterday"), so the shortest is the closest to the name itself.
-          const name = entry.names.length
-            ? entry.names.slice().sort((x, y) => x.length - y.length)[0]
-            : null;
+          let name = null;
+          for (const k of NAME_SOURCES) {
+            if (entry.sources[k]) { name = entry.sources[k]; break; }
+          }
           out.push({ name: name || null, sub: null, url: entry.url });
         }
         return out;

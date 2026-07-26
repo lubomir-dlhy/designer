@@ -189,7 +189,11 @@ jobs:
       #
       # Runs last so the label + drift-PR comment posted during triage land first.
       - name: Fail when auto-heal is structurally blind
-        if: steps.triage.outputs.reason == 'blind-unpatchable'
+        # Gated on the dedicated `blind` output, not on `reason`: a wholesale
+        # regression that is ALSO unpatchable emits reason=wholesale-redesign,
+        # and keying on reason would miss exactly the worst case — many anchors
+        # down and auto-heal powerless to touch any of them.
+        if: steps.triage.outputs.blind == 'true'
         run: |
           echo "::error title=auto-heal cannot fix the failing anchors::${{ steps.triage.outputs.blind-anchors }} — these have failed for 2+ runs and none are auto-patchable. This will not resolve on its own; repair the selector by hand or extend the patcher."
           exit 1

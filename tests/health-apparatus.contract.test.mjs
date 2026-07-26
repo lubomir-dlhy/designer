@@ -373,12 +373,9 @@ test('the auto-heal workflow fails the job when triage reports structural blindn
   // explicit gate the workflow still concluded success in exactly the
   // blind-while-anchors-fail scenario this PR exists to surface.
   const wf = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/auto-heal.yml'), 'utf8');
-  assert.ok(
-    wf.includes("steps.triage.outputs.reason == 'blind-unpatchable'"),
-    'no workflow gate on the blind-unpatchable reason — auto-heal would stay green while blind'
-  );
-  const gateIdx = wf.indexOf("steps.triage.outputs.reason == 'blind-unpatchable'");
-  assert.match(wf.slice(gateIdx, gateIdx + 500), /exit 1/, 'the blind gate must actually fail the job');
+  const GATE = "steps.triage.outputs.blind == 'true'";
+  assert.ok(wf.includes(GATE), 'no workflow gate on blindness — auto-heal would stay green while blind');
+  assert.match(wf.slice(wf.indexOf(GATE), wf.indexOf(GATE) + 500), /exit 1/, 'the blind gate must actually fail the job');
 });
 
 test('the blind reason string is emitted by triage exactly as the workflow expects', () => {
@@ -401,4 +398,50 @@ test('no health-apparatus script keeps its own hardcoded readiness selector', ()
       assert.ok(/= SEL\./.test(d), `${f} hardcodes a readiness selector instead of reading selectors.json: ${d}`);
     }
   }
+});
+
+// --- PR #131 review round 6 ---
+
+test('blindness is classified before the wholesale-redesign early return', () => {
+  // The gap: >=5 failing anchors returned reason=wholesale-redesign BEFORE the
+  // classification ran, so a wholesale regression in which nothing was
+  // patchable never reported blindness — the worst case (many anchors down,
+  // auto-heal powerless) stayed green.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/auto-heal.ts'), 'utf8');
+  const classifyAt = src.indexOf('const classified = classifyCandidates(');
+  const wholesaleAt = src.indexOf('candidates.length >= WHOLESALE_THRESHOLD');
+  assert.notEqual(classifyAt, -1);
+  assert.notEqual(wholesaleAt, -1);
+  assert.ok(classifyAt < wholesaleAt, 'classification must run before the wholesale early return');
+});
+
+test('every triage exit publishes a blind flag', () => {
+  // Same lesson as the ci-health verdict: a gate keyed on an output only works
+  // if every exit sets it, or the unset case silently gates to green.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/auto-heal.ts'), 'utf8');
+  const start = src.indexOf('function triage()');
+  const end = src.indexOf('// ---- heal ----');
+  assert.ok(start > 0 && end > start, 'triage() bounds not found — update this test');
+  const triage = src.slice(start, end);
+  const reasons = (triage.match(/ghOutput\('reason',/g) || []).length;
+  const blinds = (triage.match(/ghOutput\('blind',/g) || []).length;
+  const heals = (triage.match(/ghOutput\('action', 'heal'\)/g) || []).length;
+  assert.ok(reasons > 0, 'no triage reasons found — update this test');
+  assert.equal(blinds, reasons + heals, `every exit must publish blind: ${reasons} reasons + ${heals} heal vs ${blinds} blind flags`);
+});
+
+test('the auto-heal gate keys on blind, not on a single reason slot', () => {
+  const wf = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/auto-heal.yml'), 'utf8');
+  assert.ok(wf.includes("steps.triage.outputs.blind == 'true'"), 'gate must key on the dedicated blind output');
+  // reason can only hold one value, so wholesale-redesign would mask blindness.
+  assert.ok(!wf.includes("reason == 'blind-unpatchable'"), 'gate still keys on the mutually-exclusive reason slot');
+});
+
+test('project names are chosen by source priority, not string length', () => {
+  // A control link ("Open") is SHORTER than the real name, so shortest-wins
+  // picked the button label on exactly the multi-link row the dedupe exists for.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
+  const scrape = src.slice(src.indexOf('const LINK_SEL ='), src.indexOf('async listFiles('));
+  assert.ok(!/sort\(\(x, y\) => x\.length - y\.length\)/.test(scrape), 'shortest-wins heuristic is back');
+  assert.match(scrape, /NAME_SOURCES = \['rowCell', 'ariaLabel', 'anchorText'\]/, 'source priority order changed');
 });

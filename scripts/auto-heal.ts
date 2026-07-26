@@ -358,6 +358,7 @@ function triage(): void {
     console.log('[auto-heal triage] no artifact found — download step should have provided one');
     ghOutput('action', 'skip');
     ghOutput('reason', 'no-artifact');
+    ghOutput('blind', 'false');
     process.exit(1);
   }
   const { data, date } = artifact;
@@ -367,6 +368,7 @@ function triage(): void {
     console.log('[auto-heal triage] artifact reason=cdp-unreachable — infra failure, skipping');
     ghOutput('action', 'skip');
     ghOutput('reason', 'cdp-unreachable');
+    ghOutput('blind', 'false');
     return;
   }
 
@@ -374,6 +376,7 @@ function triage(): void {
     console.log('[auto-heal triage] artifact has no health.results — malformed');
     ghOutput('action', 'skip');
     ghOutput('reason', 'no-results');
+    ghOutput('blind', 'false');
     process.exit(1);
   }
 
@@ -394,8 +397,36 @@ function triage(): void {
     console.log(`[auto-heal triage] no anchors at streak >= ${STREAK_THRESHOLD}`);
     ghOutput('action', 'skip');
     ghOutput('reason', 'below-threshold');
+    ghOutput('blind', 'false');
     return;
   }
+
+  // Classify BEFORE any early return. The wholesale-redesign branch below used
+  // to bail first, so a wholesale regression in which nothing was patchable
+  // emitted reason=wholesale-redesign and never reported blindness — leaving the
+  // workflow green in the worst case (many anchors down, auto-heal powerless).
+  const byId = new Map<string, ProbeResult>();
+  for (const r of data.health.results) {
+    if (!byId.has(r.id)) byId.set(r.id, r);
+  }
+
+  // Sort candidates by priority bucket
+  const sorted = [...candidates].sort((a, b) => {
+    const ca = byId.get(a)?.category ?? 'pattern';
+    const cb = byId.get(b)?.category ?? 'pattern';
+    return PRIORITY.indexOf(ca) - PRIORITY.indexOf(cb);
+  });
+
+  const anchorsSource = fs.readFileSync(ANCHORS_PATH, 'utf8');
+
+  const classified = classifyCandidates(sorted, {
+    canPatch: (id) => canPatch(anchorsSource, id),
+    inCooldown: isWithinCooldown,
+    // Shape gate: anchor-id flows into a shell-interpolated workflow command,
+    // so a future code path adding streak keys from a non-anchor source must
+    // not be able to inject here.
+    isValidId: isValidAnchorId
+  });
 
   if (candidates.length >= WHOLESALE_THRESHOLD) {
     console.log(`[auto-heal triage] ${candidates.length} anchors regressed — wholesale-redesign suspected`);
@@ -429,34 +460,18 @@ function triage(): void {
     }
     ghOutput('action', 'skip');
     ghOutput('reason', 'wholesale-redesign');
+    // A wholesale regression can ALSO be structurally blind; the two are
+    // independent facts, so blindness gets its own output rather than competing
+    // for the single `reason` slot.
+    ghOutput('blind', String(isStructurallyBlind(classified)));
+    if (isStructurallyBlind(classified)) {
+      console.log(`::error title=auto-heal is structurally blind::a wholesale regression is suspected AND none of the ${classified.unpatchable.length} failing anchors are auto-patchable: ${classified.unpatchable.join(', ')}`);
+    }
     ghOutput('candidate-count', String(candidates.length));
     return;
   }
 
   // Map id → category for priority sort
-  const byId = new Map<string, ProbeResult>();
-  for (const r of data.health.results) {
-    if (!byId.has(r.id)) byId.set(r.id, r);
-  }
-
-  // Sort candidates by priority bucket
-  const sorted = [...candidates].sort((a, b) => {
-    const ca = byId.get(a)?.category ?? 'pattern';
-    const cb = byId.get(b)?.category ?? 'pattern';
-    return PRIORITY.indexOf(ca) - PRIORITY.indexOf(cb);
-  });
-
-  const anchorsSource = fs.readFileSync(ANCHORS_PATH, 'utf8');
-
-  const classified = classifyCandidates(sorted, {
-    canPatch: (id) => canPatch(anchorsSource, id),
-    inCooldown: isWithinCooldown,
-    // Shape gate: anchor-id flows into a shell-interpolated workflow command,
-    // so a future code path adding streak keys from a non-anchor source must
-    // not be able to inject here.
-    isValidId: isValidAnchorId
-  });
-
   for (const id of classified.unpatchable) {
     console.log(`[auto-heal triage] ${id} — check shape not auto-patchable`);
   }
@@ -472,6 +487,7 @@ function triage(): void {
     console.log(`[auto-heal triage] selected ${selected} (streak=${streak[selected]}, category=${byId.get(selected)?.category ?? 'unknown'})`);
     ghOutput('action', 'heal');
     ghOutput('anchor-id', selected);
+    ghOutput('blind', 'false');
     return;
   }
 
@@ -506,6 +522,7 @@ function triage(): void {
     }
     ghOutput('action', 'skip');
     ghOutput('reason', 'blind-unpatchable');
+    ghOutput('blind', 'true');
     ghOutput('blind-anchors', classified.unpatchable.join(','));
     return;
   }
@@ -513,6 +530,7 @@ function triage(): void {
   console.log('[auto-heal triage] all candidates in cooldown — skipping');
   ghOutput('action', 'skip');
   ghOutput('reason', 'no-eligible-candidate');
+  ghOutput('blind', 'false');
 }
 
 // ---- heal ----
