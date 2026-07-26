@@ -12,8 +12,20 @@ import { REPO_ROOT } from './repo-root.ts';
 // independently in each file, which drifted apart on every claude.ai redesign
 // (e.g. login.signedIn kept probing a chat-composer-input testid the home had
 // dropped). Keep DOM selectors in selectors.json, not inline literals.
+// Canonical vs legacy. A comma-separated CSS list is not an ordered fallback —
+// `querySelector('A, B')` returns whichever matches first in DOCUMENT ORDER. So
+// canonical entries stay single-branch and superseded forms live in the
+// `*Legacy` blocks, resolved explicitly and in order (see resolveBranches).
+// This keeps a health anchor from staying green on the legacy branch after the
+// canonical selector has rotted.
 export interface Selectors {
   login: { signedInIndicator: string | null };
+  loginLegacy?: { signedInIndicator?: string | null };
+  homeLegacy?: {
+    createButton?: string;
+    projectsList?: string;
+    projectCard?: string;
+  };
   home: {
     creator: string;
     nameInput: string;
@@ -25,7 +37,10 @@ export interface Selectors {
     highFiButton: string;
     createButton: string;
     projectsList: string;
+    /** The project ROW container (canonical). */
     projectCard: string;
+    /** The per-project link carrying the /design/p/<uuid> href. */
+    projectLink: string;
   };
   composer: {
     promptTextarea: string;
@@ -71,6 +86,25 @@ function loadSelectors(): Selectors {
     }
   }
   return base;
+}
+
+/**
+ * Canonical-first, legacy-second, as an ORDERED list. Use when the caller acts
+ * on the element (clicks it, fills it) — `querySelector('A, B')` would return
+ * whichever is first in document order, which is not necessarily the canonical
+ * one, and a stale duplicate could win.
+ */
+export function orderedBranches(canonical: string, legacy?: string | null): string[] {
+  return legacy && legacy !== canonical ? [canonical, legacy] : [canonical];
+}
+
+/**
+ * Canonical + legacy joined for a PRESENCE-only test ("is any of these here?").
+ * Safe precisely because the caller does not care which element comes back.
+ * Never use this to pick an element to act on — see orderedBranches.
+ */
+export function presenceSelector(canonical: string | null | undefined, legacy?: string | null): string {
+  return [canonical, legacy].filter(Boolean).join(', ');
 }
 
 let _cached: Selectors | null = null;

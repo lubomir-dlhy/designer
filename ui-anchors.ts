@@ -18,7 +18,12 @@ const SEL = getSelectors();
 
 export type AnchorCategory = 'home' | 'session' | 'share' | 'pattern';
 export type AnchorState = 'home' | 'session' | 'any';
-export type ProbeStatus = 'ok' | 'fail' | 'skip';
+// `degraded` = the canonical selector is GONE but a superseded legacy branch
+// still matches. The tool keeps working, so this is not a `fail` (it must not
+// open drift PRs or go red), but it is emphatically not `ok` either — before
+// this existed the legacy branch was packed into the same comma-OR selector and
+// simply kept the anchor green, hiding the canonical rot from the daily probe.
+export type ProbeStatus = 'ok' | 'degraded' | 'fail' | 'skip';
 export type ProbePhase = 'home' | 'session';
 
 export interface ProbeResult {
@@ -47,6 +52,32 @@ async function hasSelector(browser: Browser, sel: string): Promise<boolean> {
   return !!(await browser
     .evalValue<boolean>(`!!document.querySelector(${JSON.stringify(sel)})`)
     .catch(() => false));
+}
+
+/**
+ * Probe a canonical selector, falling back to a superseded one ONLY to
+ * distinguish "still works via the old shape" from "gone entirely".
+ *
+ * Ordered on purpose: packing both into one `querySelector('A, B')` would return
+ * whichever comes first in document order — not the canonical match — and would
+ * report plain `ok` either way, which is exactly how legacy branches masked
+ * canonical rot from the daily probe.
+ */
+async function checkWithLegacy(
+  browser: Browser,
+  canonical: string,
+  legacy: string | null | undefined,
+  label: string
+): Promise<{ ok: boolean; status?: ProbeStatus; detail?: string }> {
+  if (await hasSelector(browser, canonical)) return { ok: true };
+  if (legacy && (await hasSelector(browser, legacy))) {
+    return {
+      ok: true,
+      status: 'degraded',
+      detail: `canonical ${label} selector (${canonical}) is GONE; still matching the superseded branch (${legacy}). Re-capture the canonical selector — the tool works today but this is unrepaired drift.`
+    };
+  }
+  return { ok: false, detail: `neither canonical (${canonical}) nor legacy (${legacy ?? 'none'}) matched` };
 }
 
 // True on a `.dc.html` DESIGN-CANVAS session (a Figma-like editor — dc-tool-*,
@@ -217,8 +248,20 @@ export const UI_ANCHORS: AnchorDef[] = [
       // this signed-in check (the #16/#32 false-positive this anchor guards). Its
       // absence means the login wall is served at the /design URL — fail loudly.
       if (/claude\.ai\/design/.test(url)) {
-        const signedIn = await hasSelector(b, SEL.login.signedInIndicator ?? '');
-        if (signedIn) return { ok: true };
+        if (await hasSelector(b, SEL.login.signedInIndicator ?? '')) return { ok: true };
+        // Legacy arm: `button[title="Create"]` used to be packed into the same
+        // comma-OR as the composer testids. It is weaker evidence of auth than a
+        // composer (an action button could plausibly render on an unauthenticated
+        // shell), so it no longer counts as a clean pass — but it still beats
+        // sending the user to re-login. Keep it, mark it degraded.
+        const legacyMarker = SEL.loginLegacy?.signedInIndicator;
+        if (legacyMarker && (await hasSelector(b, legacyMarker))) {
+          return {
+            ok: true,
+            status: 'degraded',
+            detail: `signed-in marker matched only the superseded branch (${legacyMarker}); canonical composer testids absent. Re-capture login.signedInIndicator — do NOT re-login.`
+          };
+        }
         // The signed-in marker is absent. Before reporting "signed out" (which
         // sends the user to re-login), check for an unambiguous signed-in-home
         // landmark the login wall never renders — a project link or the home
@@ -288,23 +331,23 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'home.createButton',
     category: 'home',
-    description: 'creation submit button ([data-testid="home-composer-send"] / button[title="Create"])',
+    description: 'creation submit button ([data-testid="home-composer-send"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.createButton) })
+    check: async (b) => checkWithLegacy(b, SEL.home.createButton, SEL.homeLegacy?.createButton, 'home.createButton')
   },
   {
     id: 'home.projectsList',
     category: 'home',
     description: 'project list ([data-testid="projects-list"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectsList) })
+    check: async (b) => checkWithLegacy(b, SEL.home.projectsList, SEL.homeLegacy?.projectsList, 'home.projectsList')
   },
   {
     id: 'home.projectCard',
     category: 'home',
     description: 'project row ([data-testid="project-row"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectCard) })
+    check: async (b) => checkWithLegacy(b, SEL.home.projectCard, SEL.homeLegacy?.projectCard, 'home.projectCard')
   },
 
   // --- inside a session (after /design/p/{uuid}) ---

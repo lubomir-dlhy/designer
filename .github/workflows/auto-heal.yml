@@ -89,6 +89,10 @@ jobs:
             --color FFB4A2 \
             --description ">=5 anchors regressed at once — needs human triage" \
             2>/dev/null || true
+          gh label create auto-heal-blind \
+            --color D00000 \
+            --description "Anchors are failing but none are auto-patchable — auto-heal cannot fix these" \
+            2>/dev/null || true
 
       - name: Setup node
         uses: actions/setup-node@v6

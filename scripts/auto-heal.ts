@@ -24,10 +24,73 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { REPO_ROOT } from '../repo-root.ts';
 import { createBrowser } from '../browser.ts';
 import { canPatch, findAnchor, patchSelector } from './anchor-patcher.ts';
+
+/**
+ * Split triage candidates by WHY each one can or cannot be healed.
+ *
+ * This exists because the old triage collapsed two opposite situations into one
+ * log line ("all candidates either complex or in cooldown"):
+ *
+ *   - cooldown        -> temporary; it resolves on its own in COOLDOWN_DAYS
+ *   - not patchable   -> PERMANENT; it will never resolve without a code change
+ *
+ * Conflating them is how auto-heal ran green for the nine days of #118-#126.
+ * Centralizing selectors into selectors.json (a correct decision) rewrote every
+ * anchor from `hasSelector(b, '<literal>')` to `hasSelector(b, SEL.home.creator)`,
+ * and the AST patcher only rewrites string literals — so EVERY anchor became
+ * unpatchable at once. `home.creator` sat at streak 9 while auto-heal reported
+ * conclusion "success" daily. Structural blindness must be loud and must not
+ * look like "nothing to do".
+ *
+ * Pure + exported so the decision is unit-testable without a browser, an API
+ * key, or a live artifact.
+ */
+export interface CandidateClassification {
+  /** Healable right now. */
+  eligible: string[];
+  /** Permanently blind: the patcher cannot express a fix for this anchor. */
+  unpatchable: string[];
+  /** Temporarily skipped; will become eligible again. */
+  cooling: string[];
+  /** Failed anchor-id shape validation (shell-injection gate). */
+  invalid: string[];
+}
+
+export function classifyCandidates(
+  candidates: string[],
+  probes: {
+    canPatch: (id: string) => boolean;
+    inCooldown: (id: string) => boolean;
+    isValidId: (id: string) => boolean;
+  }
+): CandidateClassification {
+  const out: CandidateClassification = { eligible: [], unpatchable: [], cooling: [], invalid: [] };
+  for (const id of candidates) {
+    if (!probes.isValidId(id)) out.invalid.push(id);
+    else if (!probes.canPatch(id)) out.unpatchable.push(id);
+    else if (probes.inCooldown(id)) out.cooling.push(id);
+    else out.eligible.push(id);
+  }
+  return out;
+}
+
+/**
+ * True when auto-heal has real work queued but cannot act on ANY of it for
+ * structural reasons. This is the state that must never be silent again.
+ */
+export function isStructurallyBlind(c: CandidateClassification): boolean {
+  return c.eligible.length === 0 && c.unpatchable.length > 0;
+}
+
+/** Anchor ids the patcher can currently rewrite — reality, not intent. */
+export function patchableAnchorIds(anchorsSource: string, ids: string[]): string[] {
+  return ids.filter((id) => canPatch(anchorsSource, id));
+}
 
 const HEALTH_DIR = path.join(REPO_ROOT, 'artifacts', 'health');
 const STREAK_PATH = path.join(HEALTH_DIR, 'streak.json');
@@ -367,30 +430,69 @@ function triage(): void {
 
   const anchorsSource = fs.readFileSync(ANCHORS_PATH, 'utf8');
 
-  for (const id of sorted) {
-    if (!canPatch(anchorsSource, id)) {
-      console.log(`[auto-heal triage] ${id} — check shape not auto-patchable, skipping`);
-      continue;
-    }
-    if (isWithinCooldown(id)) {
-      console.log(`[auto-heal triage] ${id} — within ${COOLDOWN_DAYS}-day cooldown, skipping`);
-      continue;
-    }
-    if (!isValidAnchorId(id)) {
-      // Should never happen for source-defined UI_ANCHORS, but the shape
-      // gate exists because anchor-id flows into a shell-interpolated
-      // workflow command. A future code path that adds streak keys from
-      // a non-anchor source must not be able to inject here.
-      console.log(`[auto-heal triage] ${id} — failed anchor-id shape validation, skipping`);
-      continue;
-    }
-    console.log(`[auto-heal triage] selected ${id} (streak=${streak[id]}, category=${byId.get(id)?.category ?? 'unknown'})`);
+  const classified = classifyCandidates(sorted, {
+    canPatch: (id) => canPatch(anchorsSource, id),
+    inCooldown: isWithinCooldown,
+    // Shape gate: anchor-id flows into a shell-interpolated workflow command,
+    // so a future code path adding streak keys from a non-anchor source must
+    // not be able to inject here.
+    isValidId: isValidAnchorId
+  });
+
+  for (const id of classified.unpatchable) {
+    console.log(`[auto-heal triage] ${id} — check shape not auto-patchable`);
+  }
+  for (const id of classified.cooling) {
+    console.log(`[auto-heal triage] ${id} — within ${COOLDOWN_DAYS}-day cooldown, skipping`);
+  }
+  for (const id of classified.invalid) {
+    console.log(`[auto-heal triage] ${id} — failed anchor-id shape validation, skipping`);
+  }
+
+  const selected = classified.eligible[0];
+  if (selected) {
+    console.log(`[auto-heal triage] selected ${selected} (streak=${streak[selected]}, category=${byId.get(selected)?.category ?? 'unknown'})`);
     ghOutput('action', 'heal');
-    ghOutput('anchor-id', id);
+    ghOutput('anchor-id', selected);
     return;
   }
 
-  console.log('[auto-heal triage] all candidates either complex or in cooldown — skipping');
+  // Nothing healable. Distinguish "wait for the cooldown" from "auto-heal
+  // physically cannot fix this, ever" — the second one is a standing defect in
+  // this tool and needs a human, not another quiet day.
+  if (isStructurallyBlind(classified)) {
+    const ids = classified.unpatchable.join(', ');
+    console.log(
+      `::error title=auto-heal is structurally blind::${classified.unpatchable.length} anchor(s) have failed for ${STREAK_THRESHOLD}+ runs and NONE are auto-patchable: ${ids}. auto-heal cannot fix these — a human must.`
+    );
+    const driftPr = findDriftPrNumber(date);
+    if (driftPr != null && !prHasLabel(driftPr, 'auto-heal-blind')) {
+      gh([
+        'pr',
+        'comment',
+        String(driftPr),
+        '--body',
+        [
+          '## Auto-heal cannot fix this',
+          '',
+          `These anchors have failed for ${STREAK_THRESHOLD}+ consecutive runs, but **none of them are auto-patchable**, so auto-heal has taken no action and will not take any on future runs either:`,
+          '',
+          ...classified.unpatchable.map((id) => `- \`${id}\` (streak=${streak[id]})`),
+          '',
+          'The AST patcher can only rewrite anchors shaped `hasSelector(b, \'<string literal>\')`. Anchors that read their selector from `selectors.json` (`SEL.group.key`) are outside its reach, as are `hasButtonMatching` / custom-walker checks.',
+          '',
+          '**This will not resolve on its own.** Repair the selector by hand, or extend the patcher.'
+        ].join('\n')
+      ]);
+      gh(['pr', 'edit', String(driftPr), '--add-label', 'auto-heal-blind']);
+    }
+    ghOutput('action', 'skip');
+    ghOutput('reason', 'blind-unpatchable');
+    ghOutput('blind-anchors', classified.unpatchable.join(','));
+    return;
+  }
+
+  console.log('[auto-heal triage] all candidates in cooldown — skipping');
   ghOutput('action', 'skip');
   ghOutput('reason', 'no-eligible-candidate');
 }
@@ -903,7 +1005,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: Error) => {
+// Only run when executed as a script. Importing this module (unit tests reaching
+// for classifyCandidates) must not trigger a heal run — it shells out to git/gh
+// and calls the Anthropic API.
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly)
+  main().catch((e: Error) => {
   // An uncaught exception is a programmer error (bad artifact shape, missing
   // tool, SDK contract drift). Exit 1 so the workflow goes red — masking it
   // as exit 0 would put it in the same silent-no-op class the expected-skip

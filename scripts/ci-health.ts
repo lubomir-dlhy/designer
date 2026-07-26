@@ -10,10 +10,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { createBrowser, type Browser } from '../browser.ts';
-import { runHealth, type ProbeResult } from '../ui-anchors.ts';
+import { runHealth, UI_ANCHORS, type ProbeResult } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
+import { getSelectors } from '../selectors.ts';
 import { classifyInterstitial, INTERSTITIAL_PROBE_EXPR, type InterstitialKind, type InterstitialProbe } from '../interstitials.ts';
+
+const SEL = getSelectors();
 
 const CDP_PORT = process.env.DESIGNER_CDP || '9222';
 const CHROME_PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
@@ -25,25 +29,54 @@ const CHROME_APP = '/Applications/Google Chrome.app';
 // loudly). 15s adaptive wait — claude.ai/design's SPA usually paints in 2-4s;
 // 15s is the runner-cold-load ceiling before we proceed and let anchors fail.
 const HOME_URL = 'https://claude.ai/design';
-const HOME_READY_SEL = '[data-testid="project-creator"]';
-const SESSION_READY_SEL = '[data-testid="chat-composer-input"]';
+// Readiness gates, resolved from selectors.json rather than inlined. These were
+// hardcoded literals until 2026-07, and the home one ([data-testid="project-creator"])
+// had been dead since a redesign — so every run burned the full BROWSER_TIMEOUT_MS
+// waiting for an element that could never appear, then proceeded WITHOUT a
+// readiness guarantee. adaptiveWait only logs on timeout, so the probe looked
+// healthy the whole time. Sourcing them here means a drift repair in
+// selectors.json fixes the gate too, instead of leaving a second stale copy.
+const HOME_READY_SEL = SEL.home.creator;
+const SESSION_READY_SEL = SEL.composer.promptTextarea;
 const BROWSER_TIMEOUT_MS = 15_000;
 
 interface DoctorRun {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /** Non-null when the process never launched (ENOENT, EACCES, timeout kill). */
+  spawnError: string | null;
+}
+
+// Resolve the CLI entry point from package.json's `bin` map instead of guessing
+// the filename. This spawned `bin/designer` (no extension) from 2026-05 until
+// 2026-07-25; the real file is `bin/designer.mjs`, so every run failed ENOENT,
+// `r.status` came back null, `?? -1` rendered it as exitCode -1, and r.error was
+// discarded — which is why stdout AND stderr were both empty. `designer doctor`,
+// i.e. the entire tooling-state half of this probe, had never once executed.
+// Reading the path from the manifest means a rename can't silently re-break it.
+export function resolveDoctorBin(repoRoot: string = REPO_ROOT): string {
+  const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')) as {
+    bin?: string | Record<string, string>;
+  };
+  const rel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.designer;
+  if (!rel) throw new Error('package.json declares no `bin` entry for designer');
+  return path.join(repoRoot, rel);
 }
 
 function runDoctor(): DoctorRun {
   // Shell out so we get the same view a human would running `designer doctor`.
   // Doctor has no --json today; we capture raw text and the exit code.
-  const bin = path.join(REPO_ROOT, 'bin', 'designer');
+  const bin = resolveDoctorBin();
   const r = spawnSync(bin, ['doctor'], { encoding: 'utf8', timeout: 60_000 });
   return {
     exitCode: r.status ?? -1,
     stdout: r.stdout || '',
-    stderr: r.stderr || ''
+    stderr: r.stderr || '',
+    // A failure to LAUNCH is not an exit code. Keep it distinguishable in the
+    // artifact so "never ran" can never again read the same as "ran and was
+    // unhappy" — that ambiguity is what hid this bug for two months.
+    spawnError: r.error ? `${(r.error as NodeJS.ErrnoException).code ?? 'ERROR'}: ${r.error.message}` : null
   };
 }
 
@@ -168,7 +201,13 @@ function updateStreak(outDir: string, results: ProbeResult[]): void {
     const prev = verdict.get(r.id);
     if (r.status === 'fail') {
       verdict.set(r.id, 'fail'); // fail wins over ok
-    } else if (r.status === 'ok' && prev !== 'fail') {
+    } else if ((r.status === 'ok' || r.status === 'degraded') && prev !== 'fail') {
+      // `degraded` resets the streak like `ok`. It is unrepaired drift, but the
+      // anchor is NOT in this run's `fail` set, so auto-heal could never select
+      // it as a candidate — counting it as a fail would grow a streak that can
+      // never be acted on and could push the count past WHOLESALE_THRESHOLD,
+      // causing a false wholesale-redesign bail. Degradation is surfaced via the
+      // artifact + a workflow warning instead.
       verdict.set(r.id, 'ok');
     }
   }
@@ -178,6 +217,21 @@ function updateStreak(outDir: string, results: ProbeResult[]): void {
       streak[id] = (streak[id] ?? 0) + 1;
     } else {
       streak[id] = 0;
+    }
+  }
+
+  // Prune orphans: keys for anchors that no longer EXIST. `home.nameInput: 2`
+  // survived long after that anchor was dropped, and auto-heal iterates streak
+  // entries as candidates, so stale keys are noise in the one signal it reads.
+  //
+  // Keyed on the full UI_ANCHORS registry, NOT on this run's results: a run that
+  // skips the session phase (DESIGNER_PROBE_PROJECT_URL unset) produces no
+  // session.* results, and pruning on that would erase every live session streak.
+  const known = new Set(UI_ANCHORS.map((a) => a.id));
+  for (const id of Object.keys(streak)) {
+    if (!known.has(id)) {
+      console.log(`[ci-health] pruning orphan streak key ${id} (no longer a declared anchor)`);
+      delete streak[id];
     }
   }
 
@@ -338,6 +392,11 @@ async function main(): Promise<void> {
   const results: ProbeResult[] = [...homeResults, ...sessionResults];
   const counts = {
     ok: results.filter((r) => r.status === 'ok').length,
+    // `degraded` = working only via a superseded selector branch. Reported
+    // separately and deliberately NOT folded into `fail`: it must not open drift
+    // PRs or turn the run red (the tool still works), but it must never again be
+    // invisible the way a comma-OR fallback made it.
+    degraded: results.filter((r) => r.status === 'degraded').length,
     fail: results.filter((r) => r.status === 'fail').length,
     skip: results.filter((r) => r.status === 'skip').length
   };
@@ -363,7 +422,8 @@ async function main(): Promise<void> {
     doctor: {
       exitCode: doctor.exitCode,
       stdout: scrubArtifact(doctor.stdout),
-      stderr: scrubArtifact(doctor.stderr)
+      stderr: scrubArtifact(doctor.stderr),
+      spawnError: doctor.spawnError
     },
     health: {
       ok: !fail,
@@ -394,8 +454,22 @@ async function main(): Promise<void> {
   }
 
   // One-line summary for the workflow log.
-  const summary = `[ci-health] ${payload.ok ? 'OK' : 'FAIL'} — health ${counts.ok} ok / ${counts.fail} fail / ${counts.skip} skip · doctor exit ${doctor.exitCode} · v${payload.designerVersion}`;
+  const doctorSummary = doctor.spawnError ? `doctor DID NOT RUN (${doctor.spawnError})` : `doctor exit ${doctor.exitCode}`;
+  const summary = `[ci-health] ${payload.ok ? 'OK' : 'FAIL'} — health ${counts.ok} ok / ${counts.degraded} degraded / ${counts.fail} fail / ${counts.skip} skip · ${doctorSummary} · v${payload.designerVersion}`;
   console.log(summary);
+  if (counts.degraded > 0) {
+    const degraded = results.filter((r) => r.status === 'degraded');
+    console.log(
+      `::warning title=${counts.degraded} anchor(s) running on superseded selectors::${degraded.map((r) => r.id).join(', ')} — the canonical selector is gone; re-capture before the legacy branch goes too`
+    );
+    console.log(degraded.map((r) => `  ${r.id} — ${r.detail || r.description}`).join('\n'));
+  }
+  // A doctor that never launched is a broken probe, not a passing one. It does
+  // NOT flip `payload.ok` (that stays the UI-anchor verdict, so this can't start
+  // opening drift PRs for a tooling fault) — but it must never again be silent.
+  if (doctor.spawnError) {
+    console.log(`::warning title=designer doctor did not run::${doctor.spawnError} — the tooling-state half of this probe was skipped`);
+  }
   if (fail) {
     const failed = results.filter((r) => r.status === 'fail').map((r) => `  ${r.id} — ${r.detail || r.description}`);
     console.log(failed.join('\n'));
@@ -405,7 +479,15 @@ async function main(): Promise<void> {
   if (fail) process.exit(2);
 }
 
-main().catch((e: Error) => {
-  console.error(`[ci-health] threw: ${e.message}`);
-  process.exit(3);
-});
+// Only orchestrate when executed as a script. Without this guard, merely
+// IMPORTING this module (e.g. a unit test reaching for resolveDoctorBin) runs
+// the full probe: launches Chrome, drives claude.ai, and overwrites today's
+// artifact. Testability is the point — the doctor-path bug survived two months
+// partly because nothing here could be exercised without a browser.
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch((e: Error) => {
+    console.error(`[ci-health] threw: ${e.message}`);
+    process.exit(3);
+  });
+}
