@@ -23,14 +23,18 @@ import {
 } from './interstitials.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
 import {
-  openSwitcherExpr,
-  closeSwitcherExpr,
+  switcherStateExpr,
+  clickTriggerExpr,
   readRowsExpr,
   rowSelector,
+  stampRowExpr,
   stampMenuDeleteExpr,
   verifyConfirmDialogExpr,
   dialogPresentExpr,
   clearStampsExpr,
+  hitTestableExpr,
+  centerOfExpr,
+  scrimDismissPointExpr,
   stampedSelector,
   matchRows,
   displayLabelFor,
@@ -1423,11 +1427,104 @@ export class DesignerController {
 
     const readRows = async (): Promise<SwitcherRow[] | null> =>
       await this.browser.evalValue<SwitcherRow[]>(readRowsExpr(F)).catch(() => null);
+    // Trusted open/close. The trigger is clicked through the facade, never via
+    // an in-page synthetic click — see switcherStateExpr for why that matters
+    // (a synthetic open strands the row menu's scrim above the confirm dialog).
+    const switcherState = async (): Promise<string> =>
+      (await this.browser.evalValue<string>(switcherStateExpr(F)).catch(() => 'error')) || 'error';
+    const openSwitcher = async (): Promise<string> => {
+      let st = await switcherState();
+      if (st !== 'closed') return st;
+      // Trusted click first — it leaves the cleanest overlay state.
+      await this.browser.click(F.switcherTrigger).catch(() => null);
+      await sleep(700);
+      st = await switcherState();
+      if (st !== 'closed') return st;
+      // …but on some page states every trusted variant reports success and
+      // does nothing (live 2026-07-26). Fall back to the synthetic open; the
+      // scrim it can strand is handled before the confirm click.
+      await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
+      await sleep(800);
+      return switcherState();
+    };
     const closeSwitcher = async () => {
-      await this.browser.evalValue(closeSwitcherExpr(F)).catch(() => null);
+      if ((await switcherState()) !== 'open') return;
+      await this.browser.click(F.switcherTrigger).catch(() => null);
+      await sleep(400);
+      if ((await switcherState()) === 'open') await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
     };
     const clearStamps = async () => {
       await this.browser.evalValue(clearStampsExpr()).catch(() => null);
+    };
+    // Click a stamped node once it is genuinely the topmost element at its own
+    // click point. Modal dialogs animate in behind a full-screen backdrop, and
+    // the facade REFUSES to click through a covering element (reporting it
+    // instead of hitting the wrong target) — so waiting for hit-testability is
+    // what makes this deterministic instead of a race against an animation.
+    /**
+     * Actuate a STAMPED node, then prove the intended state change happened.
+     *
+     * Click mechanism is deliberately layered, because on this app neither
+     * mechanism is reliable alone (all measured live 2026-07-26):
+     *   1. facade trusted click — real input, cleanest semantics, but on some
+     *      page states it reports success and does nothing at all;
+     *   2. …after dismissing the switcher popover's stranded `fixed inset-0`
+     *      scrim, which otherwise covers the confirm dialog so NOTHING (facade,
+     *      coordinate, or raw CDP) can reach it;
+     *   3. synthetic `el.click()` on the stamped node — React delegates from the
+     *      document root, so this lands even when trusted input no-ops.
+     *
+     * Safety does not rest on the mechanism. Clicking the WRONG element is
+     * prevented by verify-and-stamp (the node clicked is the node just
+     * verified); a click that lands NOWHERE is caught by `verify` here and, for
+     * the delete itself, by the positive cardinality settle — which is why a
+     * no-op can never be reported as success.
+     */
+    const actuate = async (
+      stamp: string,
+      { verify, revalidate, budgetMs = 3500 }: { verify: () => Promise<boolean>; revalidate?: () => Promise<boolean>; budgetMs?: number }
+    ): Promise<string | null> => {
+      const sel = stampedSelector(stamp);
+      const trusted = async (): Promise<void> => {
+        const hit = (await this.browser.evalValue<string>(hitTestableExpr(sel)).catch(() => 'error')) || 'error';
+        if (hit === 'hittable') {
+          await this.browser.click(sel).catch(() => null);
+          return;
+        }
+        if (!hit.startsWith('covered:')) return;
+        const pt = await this.browser
+          .evalValue<{ x: number; y: number } | null>(scrimDismissPointExpr(F, legacyDialog))
+          .catch(() => null);
+        if (!pt) return;
+        await this.browser.clickAt(pt.x, pt.y).catch(() => null);
+        await sleep(600);
+        if (revalidate && !(await revalidate())) return;
+        if ((await this.browser.evalValue<string>(hitTestableExpr(sel)).catch(() => 'error')) === 'hittable') {
+          await this.browser.click(sel).catch(() => null);
+        }
+      };
+
+      await trusted();
+      const deadline = Date.now() + budgetMs;
+      while (Date.now() < deadline) {
+        if (await verify()) return null;
+        await sleep(300);
+      }
+      // Trusted input did not take. Re-confirm we are still acting on the right
+      // thing, then dispatch synthetically to the same stamped node.
+      if (revalidate && !(await revalidate())) return 'revalidate-failed-before-synthetic';
+      const res = await this.browser
+        .evalValue<string>(
+          `(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`
+        )
+        .catch(() => 'error');
+      if (res !== 'clicked') return `synthetic click ${res}`;
+      const deadline2 = Date.now() + budgetMs;
+      while (Date.now() < deadline2) {
+        if (await verify()) return null;
+        await sleep(300);
+      }
+      return 'no state change after trusted and synthetic click';
     };
 
     // --- RESOLVE (identical path for dry-run and delete, so a preview can
@@ -1435,13 +1532,23 @@ export class DesignerController {
     const resolve = async (): Promise<
       { ok: true; rows: SwitcherRow[]; matches: number[] } | { ok: false; error: 'switcher-unavailable' }
     > => {
-      const opened = await this.browser.evalValue<string>(openSwitcherExpr(F)).catch(() => 'error');
-      if (opened === 'no-trigger' || opened === 'error') return { ok: false, error: 'switcher-unavailable' };
-      await sleep(700);
+      const opened = await openSwitcher();
+      if (opened !== 'open') return { ok: false, error: 'switcher-unavailable' };
       const rows = await readRows();
       if (!rows) return { ok: false, error: 'switcher-unavailable' };
       return { ok: true, rows, matches: matchRows(rows, fileName) };
     };
+
+    // A confirm dialog left open by an earlier interrupted run blocks every
+    // click on the page (its scrim covers even the switcher trigger). Clear it
+    // before doing anything else.
+    if (await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => false)) {
+      await this.browser.press('Escape').catch(() => null);
+      await sleep(500);
+      if (await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => false)) {
+        return { ok: false, error: 'dialog-stuck', file: fileName, detail: 'a modal dialog was already open and would not dismiss' };
+      }
+    }
 
     let resolved = await resolve();
     if (!resolved.ok) return { ok: false, error: 'switcher-unavailable', file: fileName };
@@ -1506,7 +1613,13 @@ export class DesignerController {
 
     try {
       // --- REVEAL + OPEN MENU (trusted input only) ---
-      const rowSel = rowSelector(F, rowIndex);
+      // Stamp the row first: the popover interleaves rows with other elements,
+      // so an index-based CSS selector does not address them (e2e 2026-07-26).
+      const rowStamp = await this.browser.evalValue<string>(stampRowExpr(F, rowIndex)).catch(() => 'error');
+      if (rowStamp !== 'stamped') {
+        return { ok: false, error: 'switcher-unavailable', file: fileName, detail: `could not address row ${rowIndex} (${rowStamp})`, snapshotPath };
+      }
+      const rowSel = rowSelector();
       await this.browser.hover(rowSel).catch(() => null);
       await sleep(400);
       const moreSel = `${rowSel} ${F.rowMoreActions}`;
@@ -1517,16 +1630,29 @@ export class DesignerController {
       if (!(await this.browser.isVisible(moreSel).catch(() => false))) {
         return { ok: false, error: 'menu-unavailable', file: fileName, detail: 'row actions did not reveal on hover', snapshotPath };
       }
-      await this.browser.click(moreSel);
+      // Open the row menu, proving it opened rather than assuming it did.
+      const menuStamped = async (): Promise<boolean> =>
+        (await this.browser.evalValue<string>(stampMenuDeleteExpr()).catch(() => 'error')) === 'stamped';
+      await this.browser.click(moreSel).catch(() => null);
       await sleep(600);
-
-      const stamped = await this.browser.evalValue<string>(stampMenuDeleteExpr()).catch(() => 'error');
-      if (stamped !== 'stamped') {
-        await this.browser.press('Escape').catch(() => null);
-        return { ok: false, error: 'menu-unavailable', file: fileName, detail: `menu did not offer exactly one Delete (${stamped})`, snapshotPath };
+      if (!(await menuStamped())) {
+        const res = await this.browser
+          .evalValue<string>(`(() => { const e = document.querySelector(${JSON.stringify(moreSel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`)
+          .catch(() => 'error');
+        await sleep(800);
+        if (res !== 'clicked' || !(await menuStamped())) {
+          await this.browser.press('Escape').catch(() => null);
+          return { ok: false, error: 'menu-unavailable', file: fileName, detail: 'row menu did not open, or did not offer exactly one Delete', snapshotPath };
+        }
       }
-      await this.browser.click(stampedSelector(STAMP_MENU_DELETE));
-      await sleep(700);
+      const menuClickFail = await actuate(STAMP_MENU_DELETE, {
+        verify: async () => await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => false)
+      });
+      if (menuClickFail) {
+        await this.browser.press('Escape').catch(() => null);
+        return { ok: false, error: 'menu-unavailable', file: fileName, detail: `Delete menu item did not raise the confirm dialog (${menuClickFail})`, snapshotPath };
+      }
+      await sleep(400);
 
       // --- VERIFY-AND-STAMP THE DIALOG ---
       const verdict = await this.browser
@@ -1547,8 +1673,10 @@ export class DesignerController {
       }
       if (!verdict.matched) {
         // The dialog names a DIFFERENT file — cancel and prove the dialog closed.
-        await this.browser.click(stampedSelector(STAMP_CONFIRM_CANCEL)).catch(() => null);
-        await sleep(600);
+        await actuate(STAMP_CONFIRM_CANCEL, {
+          verify: async () => !(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true))
+        });
+        await sleep(400);
         let stillOpen = await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true);
         if (stillOpen) {
           await this.browser.press('Escape').catch(() => null);
@@ -1572,7 +1700,23 @@ export class DesignerController {
         await this.browser.press('Escape').catch(() => null);
         return { ok: false, error: 'project-changed', file: fileName, detail: 'tab left the bound project mid-flow', snapshotPath };
       }
-      await this.browser.click(stampedSelector(STAMP_CONFIRM_DELETE));
+      const confirmFail = await actuate(STAMP_CONFIRM_DELETE, {
+        // The dialog closing is the proof the click landed; the settle below is
+        // what proves the FILE actually went away.
+        verify: async () => !(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true)),
+        revalidate: async () => {
+          const again = await this.browser
+            .evalValue<{ matched: boolean }>(verifyConfirmDialogExpr(F, legacyDialog, fileName))
+            .catch(() => null);
+          return again?.matched === true;
+        }
+      });
+      if (confirmFail) {
+        // Nothing was clicked — the dialog is still up. Dismiss and report; the
+        // file is untouched.
+        await this.browser.press('Escape').catch(() => null);
+        return { ok: false, error: 'dialog-stuck', file: fileName, detail: `confirm button never became clickable (${confirmFail})`, snapshotPath };
+      }
 
       // --- POSITIVE SETTLE ---
       const deadline = Date.now() + 15_000;
@@ -1584,7 +1728,7 @@ export class DesignerController {
         if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
           return { ok: false, error: 'project-changed', file: fileName, detail: 'tab navigated away during settle', snapshotPath };
         }
-        await this.browser.evalValue(openSwitcherExpr(F)).catch(() => null);
+        await openSwitcher();
         const rows = await readRows();
         // Inconclusive: the popover is shut or unreadable. Counts toward
         // NEITHER success nor failure — an empty read is exactly what a

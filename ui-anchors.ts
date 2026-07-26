@@ -5,10 +5,11 @@ import { isCdpEnabled } from './cdp-env.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
 import {
-  openSwitcherExpr,
-  closeSwitcherExpr,
+  switcherStateExpr,
+  clickTriggerExpr,
   readRowsExpr,
   rowSelector,
+  stampRowExpr,
   dialogPresentExpr,
   MENU_ITEM_DELETE,
   MENU_ITEM_DOWNLOAD,
@@ -860,11 +861,21 @@ export const UI_ANCHORS: AnchorDef[] = [
 
       let entryCount = -1;
       try {
-        const opened = await b.evalValue<string>(openSwitcherExpr(SEL.files)).catch(() => 'error');
-        if (opened === 'no-trigger' || opened === 'error') {
-          return { ok: false, detail: `switcher trigger present but would not open (${opened})` };
+        // Trusted click, like production (a synthetic open leaves the menu
+        // scrim stranded — see switcherStateExpr).
+        if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'closed') {
+          await b.click(SEL.files.switcherTrigger).catch(() => null);
+          await sleep(700);
+          // Trusted click silently no-ops on some page states; fall back.
+          if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'closed') {
+            await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
+          }
         }
         await sleep(700);
+        const opened = (await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) || 'error';
+        if (opened !== 'open') {
+          return { ok: false, detail: `switcher trigger present but would not open (${opened})` };
+        }
         const rows = await rowsBefore();
         entryCount = rows.length;
         if (rows.length === 0) {
@@ -874,7 +885,9 @@ export const UI_ANCHORS: AnchorDef[] = [
         // Row actions are hover-revealed and need TRUSTED input; a synthetic
         // mouseover would not reveal them (that asymmetry is the whole reason
         // deleteFile uses the facade).
-        const rowSel = rowSelector(SEL.files, 0);
+        const stamped = await b.evalValue<string>(stampRowExpr(SEL.files, 0)).catch(() => 'error');
+        if (stamped !== 'stamped') return { ok: false, detail: `could not address the first switcher row (${stamped})` };
+        const rowSel = rowSelector();
         await b.hover(rowSel).catch(() => null);
         await sleep(400);
         const moreSel = `${rowSel} ${SEL.files.rowMoreActions}`;
@@ -918,7 +931,11 @@ export const UI_ANCHORS: AnchorDef[] = [
         // every anchor that runs after this one.
         await b.press('Escape').catch(() => null);
         await sleep(250);
-        await b.evalValue(closeSwitcherExpr(SEL.files)).catch(() => null);
+        if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open') {
+          await b.click(SEL.files.switcherTrigger).catch(() => null);
+          await sleep(300);
+          if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open') await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
+        }
         await sleep(250);
       }
     }

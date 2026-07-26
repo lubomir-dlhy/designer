@@ -57,6 +57,14 @@ export interface Browser {
   click(sel: string): Promise<string>;
   /** Real pointer move — required to reveal the hover-only per-row file actions. */
   hover(sel: string): Promise<string>;
+  /**
+   * Trusted click at viewport COORDINATES. Same real CDP input as `click`, but
+   * addressed positionally, so it still lands when `click`'s covering-element
+   * guard refuses a selector (e.g. an orphaned modal scrim painted above a
+   * dialog). Only for targets whose identity was already verified — pass
+   * coordinates read from that exact node, never a guess.
+   */
+  clickAt(x: number, y: number): Promise<void>;
   fill(sel: string, text: string): Promise<string>;
   type(sel: string, text: string): Promise<string>;
   press(key: string): Promise<string>;
@@ -170,6 +178,11 @@ export function createBrowser({
     },
     click: (sel) => run(['click', sel]),
     hover: (sel) => run(['hover', sel]),
+    clickAt: async (x, y) => {
+      await run(['mouse', 'move', String(Math.round(x)), String(Math.round(y))]);
+      await run(['mouse', 'down']);
+      await run(['mouse', 'up']);
+    },
     fill: (sel, text) => run(['fill', sel, text]),
     type: (sel, text) => run(['type', sel, text]),
     press: (key) => run(['press', key]),

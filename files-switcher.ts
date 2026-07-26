@@ -28,6 +28,7 @@ import type { Selectors } from './selectors.ts';
 
 /** Attribute the stamping expressions write; the caller clicks the stamped node. */
 export const STAMP_ATTR = 'data-designer-target';
+export const STAMP_ROW = 'row';
 export const STAMP_MENU_DELETE = 'menu-delete';
 export const STAMP_CONFIRM_DELETE = 'confirm-delete';
 export const STAMP_CONFIRM_CANCEL = 'confirm-cancel';
@@ -47,14 +48,38 @@ export interface SwitcherRow {
 }
 
 /**
- * Open the Pages popover if it isn't already open, and report whether rows are
- * reachable. Idempotent by row-presence: a blind click would TOGGLE an open
- * popover shut (the file-panel.ts lesson), which during a settle poll would
- * read as "the file is gone".
+ * READ the popover's state — it never clicks. The caller opens it with the
+ * facade's trusted click.
+ *
+ * Opening it synthetically (`trigger.click()`) *looks* like it works — the rows
+ * render — but leaves this Radix stack in a state where the row menu's
+ * `fixed inset-0` dismissal scrim stays mounted and interactive ABOVE the
+ * later confirm dialog, so every click on that dialog (facade OR raw CDP)
+ * lands on the scrim and the delete silently never happens. A trusted open
+ * does not. Cost us a live e2e cycle on 2026-07-26; the rule is now simply
+ * "trusted input for every actuation in this flow, including the open".
+ *
+ * Never a blind toggle either: a click issued while the popover is already open
+ * would CLOSE it, and during a settle poll an empty list reads as "the file is
+ * gone" (the file-panel.ts PR #77 lesson).
  */
-export function openSwitcherExpr(f: Selectors['files']): string {
+/**
+ * FALLBACK opener: a synthetic click on the trigger.
+ *
+ * Preferred path is the facade's trusted click, but on some page states that
+ * reports success and does nothing at all (live 2026-07-26: three trusted
+ * variants — selector click, hover-then-click, coordinate click — all no-oped
+ * while this opened the popover immediately). React attaches the handler via
+ * root delegation, which is why the synthetic path still works.
+ *
+ * The cost of opening this way is that the popover's `fixed inset-0` dismissal
+ * scrim can outlive the row menu and cover the confirm dialog — which the
+ * delete flow already handles by dismissing the popover before confirming
+ * (scrimDismissPointExpr). So this is a safe fallback, not a shortcut: never
+ * use a synthetic click to ACTUATE a destructive control.
+ */
+export function clickTriggerExpr(f: Selectors['files']): string {
   return `(() => {
-    if (document.querySelectorAll(${JSON.stringify(f.switcherRow)}).length > 0) return 'already-open';
     const t = document.querySelector(${JSON.stringify(f.switcherTrigger)});
     if (!t) return 'no-trigger';
     t.click();
@@ -62,12 +87,10 @@ export function openSwitcherExpr(f: Selectors['files']): string {
   })()`;
 }
 
-/** Close the popover (best-effort restoration; never throws). */
-export function closeSwitcherExpr(f: Selectors['files']): string {
+export function switcherStateExpr(f: Selectors['files']): string {
   return `(() => {
-    const t = document.querySelector(${JSON.stringify(f.switcherTrigger)});
-    if (t && document.querySelectorAll(${JSON.stringify(f.switcherRow)}).length > 0) t.click();
-    return document.querySelectorAll(${JSON.stringify(f.switcherRow)}).length;
+    if (document.querySelectorAll(${JSON.stringify(f.switcherRow)}).length > 0) return 'open';
+    return document.querySelector(${JSON.stringify(f.switcherTrigger)}) ? 'closed' : 'no-trigger';
   })()`;
 }
 
@@ -89,10 +112,29 @@ export function readRowsExpr(f: Selectors['files']): string {
   })()`;
 }
 
-/** The nth row, for hovering a resolved match (rows are 0-indexed here). */
-export function rowSelector(f: Selectors['files'], index: number): string {
-  return `${f.switcherRow}:nth-of-type(${index + 1})`;
+/**
+ * Stamp the nth MATCHING row so the caller can hover/click it by a stable
+ * selector. Rows are 0-indexed in match order.
+ *
+ * Deliberately not `:nth-of-type(n)`: that counts siblings of the same TAG, and
+ * the popover interleaves the rows with other elements ("New blank page" button,
+ * a header div), so `[data-testid=…]:nth-of-type(1)` matches nothing at all.
+ * The 2026-07-26 e2e caught exactly that — hover silently found no element and
+ * the delete reported 'menu-unavailable'.
+ */
+export function stampRowExpr(f: Selectors['files'], index: number): string {
+  return `(() => {
+    document.querySelectorAll('[${STAMP_ATTR}="${STAMP_ROW}"]').forEach((n) => n.removeAttribute('${STAMP_ATTR}'));
+    const rows = Array.from(document.querySelectorAll(${JSON.stringify(f.switcherRow)}));
+    const row = rows[${index}];
+    if (!row) return 'no-row:' + rows.length;
+    row.setAttribute('${STAMP_ATTR}', '${STAMP_ROW}');
+    return 'stamped';
+  })()`;
 }
+
+/** Selector for the stamped row (see stampRowExpr). */
+export const rowSelector = (): string => stampedSelector(STAMP_ROW);
 
 /**
  * Assert the row-actions menu is open and stamp its "Delete" item.
@@ -158,6 +200,77 @@ export function verifyConfirmDialogExpr(f: Selectors['files'], legacyDialog: str
 export function dialogPresentExpr(f: Selectors['files'], legacyDialog: string | undefined): string {
   const sels = [f.confirmDialog, legacyDialog].filter(Boolean) as string[];
   return `(() => ${JSON.stringify(sels)}.some((s) => !!document.querySelector(s)))()`;
+}
+
+/**
+ * Is this element the thing a real click would actually hit?
+ *
+ * Radix-style dialogs animate in behind a `fixed inset-0` backdrop, so for a
+ * few hundred ms the button exists and is "visible" while the overlay still
+ * owns its click point. agent-browser correctly REFUSES to click through that
+ * (it reports the covering element rather than dispatching to the wrong
+ * target), so the flow must wait for hit-testability rather than for mere
+ * presence — polling this is what makes the confirm click deterministic.
+ */
+export function hitTestableExpr(sel: string): string {
+  return `(() => {
+    const el = document.querySelector(${JSON.stringify(sel)});
+    if (!el) return 'absent';
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return 'zero-size';
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (!top) return 'no-hit';
+    return (top === el || el.contains(top) || top.contains(el)) ? 'hittable' : 'covered:' + (top.className || top.tagName);
+  })()`;
+}
+
+/**
+ * A viewport point that lands on the switcher popover's dismissal scrim and
+ * NOT on the confirm dialog — clicking it closes the popover so the dialog
+ * underneath becomes clickable.
+ *
+ * Why this is needed: the popover has to stay open to read rows, so its
+ * `fixed inset-0` dismissal layer (z-3499, pointer-events:auto, empty) is still
+ * mounted when the confirm dialog opens *beneath* it at z-3000. Every click on
+ * that dialog — facade selector click, agent-browser coordinate click, and raw
+ * CDP `Input.dispatchMouseEvent` alike — lands on the scrim instead, so the
+ * delete silently never happens. Dismissing the popover first unmounts the
+ * scrim and leaves the dialog open and intact (verified live 2026-07-26).
+ *
+ * Returns null if no covering scrim is present (nothing to dismiss) or if no
+ * safe point exists, so the caller can proceed / fail closed rather than
+ * clicking somewhere unknown.
+ */
+export function scrimDismissPointExpr(f: Selectors['files'], legacyDialog: string | undefined): string {
+  const sels = [f.confirmDialog, legacyDialog].filter(Boolean) as string[];
+  return `(() => {
+    let dialog = null;
+    for (const s of ${JSON.stringify(sels)}) { const d = document.querySelector(s); if (d) { dialog = d; break; } }
+    if (!dialog) return null;
+    const dr = dialog.getBoundingClientRect();
+    // Corners first — the dialog is centred, so these are the safest points.
+    const candidates = [[6, 6], [window.innerWidth - 6, 6], [6, window.innerHeight - 6], [window.innerWidth - 6, window.innerHeight - 6]];
+    for (const [x, y] of candidates) {
+      if (x >= dr.left && x <= dr.right && y >= dr.top && y <= dr.bottom) continue; // inside the dialog
+      const el = document.elementFromPoint(x, y);
+      if (!el) continue;
+      if (dialog.contains(el)) continue;         // would hit the dialog
+      if (!el.matches('div.fixed.inset-0')) continue; // only ever click a scrim
+      return { x, y };
+    }
+    return null;
+  })()`;
+}
+
+/** Viewport centre of a stamped node, for a coordinate-addressed trusted click. */
+export function centerOfExpr(sel: string): string {
+  return `(() => {
+    const el = document.querySelector(${JSON.stringify(sel)});
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return null;
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`;
 }
 
 /** Remove every stamp this module writes (cleanup; never throws). */

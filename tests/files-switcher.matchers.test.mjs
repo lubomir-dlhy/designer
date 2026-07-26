@@ -8,10 +8,11 @@ import {
   parseConfirmDialog,
   dialogNamesFile,
   readRowsExpr,
-  openSwitcherExpr,
+  switcherStateExpr,
   verifyConfirmDialogExpr,
   stampMenuDeleteExpr,
   rowSelector,
+  stampRowExpr,
 } from '../files-switcher.ts';
 import { getSelectors } from '../selectors.ts';
 
@@ -96,17 +97,27 @@ test('expressions interpolate the live selectors (no hardcoded testids)', () => 
   // Selectors are embedded JSON-encoded (quotes escaped) so they survive as
   // string literals inside the evaluated page expression.
   const enc = (s) => JSON.stringify(s);
-  const open = openSwitcherExpr(SEL.files);
+  const open = switcherStateExpr(SEL.files);
   assert.ok(open.includes(enc(SEL.files.switcherTrigger)), 'trigger selector must come from selectors.json');
   assert.ok(readRowsExpr(SEL.files).includes(enc(SEL.files.switcherRow)), 'row selector must come from selectors.json');
-  assert.ok(rowSelector(SEL.files, 2).startsWith(SEL.files.switcherRow), 'row selector builds off the configured row');
-  assert.equal(rowSelector(SEL.files, 2), `${SEL.files.switcherRow}:nth-of-type(3)`);
+  // Rows are addressed by STAMP, never by index CSS: the popover interleaves
+  // rows with other elements, so `[data-testid=…]:nth-of-type(1)` matches
+  // nothing. The live e2e caught that as a silent 'menu-unavailable'.
+  assert.ok(!/nth-of-type/.test(rowSelector()), 'row must not be addressed by nth-of-type');
+  assert.ok(rowSelector().includes('data-designer-target'), 'row is addressed by the stamp');
+  assert.ok(stampRowExpr(SEL.files, 2).includes('rows[2]'), 'stamp picks the nth MATCHING row');
+  assert.ok(stampRowExpr(SEL.files, 2).includes(JSON.stringify(SEL.files.switcherRow)), 'row selector from selectors.json');
 });
 
-test('openSwitcherExpr is idempotent by row-presence, never a blind toggle', () => {
-  // A blind click would close an open popover — during a settle poll that reads
-  // as "the file is gone" (the file-panel.ts PR #77 lesson).
-  assert.match(openSwitcherExpr(SEL.files), /already-open/);
+test('switcherStateExpr only READS state — the open is a trusted facade click', () => {
+  const expr = switcherStateExpr(SEL.files);
+  // Opening synthetically strands the row menu's `fixed inset-0` scrim above
+  // the confirm dialog, so every later click (facade AND raw CDP) lands on the
+  // scrim and the delete silently never happens (live e2e 2026-07-26).
+  assert.ok(!/\.click\(\)/.test(expr), 'must not click — the caller uses trusted input');
+  assert.match(expr, /'open'/);
+  assert.match(expr, /'closed'/);
+  assert.match(expr, /'no-trigger'/);
 });
 
 test('verifyConfirmDialogExpr stamps cancel on mismatch and delete on match', () => {
