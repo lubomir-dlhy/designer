@@ -197,3 +197,39 @@ test('no canonical selector smuggles a comma-OR legacy branch back in', () => {
     assert.ok(!String(value).includes(','), `home.${key} packs multiple branches into one selector: ${value}`);
   }
 });
+
+// --- PR #131 review (Codex P2 x2) ---
+
+test('doctor spawnError is scrubbed of the runner home path before it is published', async () => {
+  // Node embeds the absolute executable path in spawn errors. The health
+  // artifact is a world-downloadable public-repo artifact for 30 days, and the
+  // same string also reaches the run summary + a ::warning annotation, so the
+  // scrub has to happen at the source, not at payload-assembly time.
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(path.join(REPO_ROOT, 'bin', 'designer'), ['doctor']);
+  assert.ok(r.error, 'expected ENOENT for the extensionless path');
+  assert.match(r.error.message, /\/Users\/|\/home\//, 'precondition: raw message carries a home path');
+
+  const { scrubForTest } = await import('../scripts/ci-health.ts');
+  const scrubbed = scrubForTest(`${r.error.code}: ${r.error.message}`);
+  assert.doesNotMatch(scrubbed, /\/Users\/(?!<redacted>)[^/\s]+/, 'macOS username leaked');
+  assert.doesNotMatch(scrubbed, /\/home\/(?!<redacted>)[^/\s]+/, 'Linux username leaked');
+  assert.match(scrubbed, /ENOENT/, 'scrubbing must preserve the diagnostic');
+});
+
+test('every ProbeStatus is rendered distinctly by the CLI health reporter', () => {
+  // Guards the enum-widening gap: `degraded` was added to ProbeStatus but the
+  // `designer health` reporter still hardcoded ok/fail/skip, so counts did not
+  // add up to results.length and degraded shared an icon with skip.
+  const cli = fs.readFileSync(path.join(REPO_ROOT, 'cli.ts'), 'utf8');
+  for (const status of ['ok', 'degraded', 'fail', 'skip']) {
+    assert.ok(
+      cli.includes(`counts['${status}']`),
+      `cli.ts health output does not account for the '${status}' status — totals will not add up`
+    );
+  }
+  // Distinct glyphs: degraded must not collapse into the skip fallback.
+  const icons = cli.match(/const icon = \(s: string\) => \(([^;]+)\);/);
+  assert.ok(icons, 'icon renderer not found — update this test');
+  assert.match(icons[1], /'degraded'/, "degraded has no glyph of its own");
+});

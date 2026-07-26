@@ -76,7 +76,14 @@ function runDoctor(): DoctorRun {
     // A failure to LAUNCH is not an exit code. Keep it distinguishable in the
     // artifact so "never ran" can never again read the same as "ran and was
     // unhappy" — that ambiguity is what hid this bug for two months.
-    spawnError: r.error ? `${(r.error as NodeJS.ErrnoException).code ?? 'ERROR'}: ${r.error.message}` : null
+    //
+    // Scrubbed HERE rather than at payload-assembly time, because Node embeds the
+    // absolute executable path in spawn errors ("spawnSync /Users/<name>/.../bin/
+    // designer ENOENT") and this string reaches THREE public sinks: the
+    // world-downloadable artifact, the run summary line, and the ::warning
+    // annotation. Scrubbing only the artifact would leak the runner's username
+    // into the workflow log instead — exactly in the failure case this records.
+    spawnError: r.error ? scrubArtifact(`${(r.error as NodeJS.ErrnoException).code ?? 'ERROR'}: ${r.error.message}`) : null
   };
 }
 
@@ -97,6 +104,9 @@ function todayUtc(): string {
 // strings + fragments from URLs, and replace absolute home-dir paths with a
 // stable token so reading the artifact later still tells a maintainer
 // "doctor saw <something under home>" without exposing the username.
+/** Test seam: the scrubber is the privacy boundary, so it is asserted directly. */
+export const scrubForTest = (s: string): string => scrubArtifact(s);
+
 function scrubArtifact(s: string): string {
   if (!s) return s;
   return s
