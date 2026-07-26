@@ -585,3 +585,25 @@ test('the degraded count is published for the workflow to gate on', () => {
   const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/ci-health.ts'), 'utf8');
   assert.match(src, /ghOutput\('degraded', String\(counts\.degraded\)\)/);
 });
+
+test('the scrubber redacts a home dir whose username contains spaces', async () => {
+  // /Users/<first> <last>/ leaked the surname: [^/\s] stops at the space, so
+  // only the first token was redacted.
+  const { scrubForTest } = await import('../scripts/ci-health.ts');
+  assert.equal(scrubForTest('/Users/Provi Last/x/bin/designer'), '/Users/<redacted>/x/bin/designer');
+  assert.equal(scrubForTest('/home/runner work/y/z'), '/home/<redacted>/y/z');
+  // Still handles the trailing-segment form, and does not run away over prose.
+  assert.equal(scrubForTest('spawnSync /Users/provi ENOENT'), 'spawnSync /Users/<redacted> ENOENT');
+  assert.equal(scrubForTest('no path here at all'), 'no path here at all');
+});
+
+test('the direct-invocation guard compares realpaths on both sides', () => {
+  // import.meta.url is already symlink-resolved; comparing it to a raw argv[1]
+  // makes the guard silently false under a symlinked checkout, so the script
+  // would be imported but never run.
+  for (const f of ['scripts/ci-health.ts', 'scripts/auto-heal.ts']) {
+    const src = fs.readFileSync(path.join(REPO_ROOT, f), 'utf8');
+    assert.match(src, /realpathSync\(fileURLToPath\(import\.meta\.url\)\)/, `${f}: import side not realpath'd`);
+    assert.match(src, /fs\.realpathSync\(process\.argv\[1\]\)/, `${f}: argv side not realpath'd`);
+  }
+});

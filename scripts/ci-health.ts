@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { createBrowser, type Browser } from '../browser.ts';
 import { runHealth, UI_ANCHORS, type ProbeResult } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
@@ -206,8 +206,15 @@ function scrubArtifact(s: string): string {
     // Strip query strings and fragments from URLs (claude.ai/design?file=foo).
     .replace(/(https?:\/\/[^\s?#]+)[?#][^\s]*/g, '$1')
     // macOS home dirs (/Users/<name>/...) and Linux (/home/<name>/...).
-    .replace(/\/Users\/[^\/\s]+/g, '/Users/<redacted>')
-    .replace(/\/home\/[^\/\s]+/g, '/home/<redacted>');
+    // Two passes per platform: the first handles usernames CONTAINING SPACES by
+    // consuming up to the next path separator (a macOS full-name home like
+    // "/Users/Provi Last/…" otherwise leaked the surname, since [^/\s] stops at
+    // the space). It requires a following '/' so it cannot run away over prose.
+    // The second catches the trailing-segment form with no following slash.
+    .replace(/\/Users\/[^\/\n"]+?(?=\/)/g, '/Users/<redacted>')
+    .replace(/\/home\/[^\/\n"]+?(?=\/)/g, '/home/<redacted>')
+    .replace(/\/Users\/[^\/\s"]+/g, '/Users/<redacted>')
+    .replace(/\/home\/[^\/\s"]+/g, '/home/<redacted>');
 }
 
 function scrubNav(n: { target: string; landedOn: string; error?: string } | null): typeof n {
@@ -608,7 +615,12 @@ async function main(): Promise<void> {
 // the full probe: launches Chrome, drives claude.ai, and overwrites today's
 // artifact. Testability is the point — the doctor-path bug survived two months
 // partly because nothing here could be exercised without a browser.
-const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// realpath BOTH sides: import.meta.url is already resolved through symlinks, so
+// comparing it to a raw argv[1] makes the guard silently false under a symlinked
+// checkout (or an npm-linked bin) — the script would then be imported-but-never-run.
+// Latent today (both workflows invoke by relative path), cheap to make robust.
+const entry = process.argv[1] ? fs.realpathSync(process.argv[1]) : '';
+const invokedDirectly = entry !== '' && fs.realpathSync(fileURLToPath(import.meta.url)) === entry;
 if (invokedDirectly) {
   main().catch((e: Error) => {
     console.error(`[ci-health] threw: ${e.message}`);

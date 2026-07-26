@@ -30,7 +30,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { REPO_ROOT } from '../repo-root.ts';
 import { createBrowser } from '../browser.ts';
@@ -1048,7 +1048,12 @@ async function main(): Promise<void> {
 // Only run when executed as a script. Importing this module (unit tests reaching
 // for classifyCandidates) must not trigger a heal run — it shells out to git/gh
 // and calls the Anthropic API.
-const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// realpath BOTH sides: import.meta.url is already resolved through symlinks, so
+// comparing it to a raw argv[1] makes the guard silently false under a symlinked
+// checkout (or an npm-linked bin) — the script would then be imported-but-never-run.
+// Latent today (both workflows invoke by relative path), cheap to make robust.
+const entry = process.argv[1] ? fs.realpathSync(process.argv[1]) : '';
+const invokedDirectly = entry !== '' && fs.realpathSync(fileURLToPath(import.meta.url)) === entry;
 if (invokedDirectly)
   main().catch((e: Error) => {
   // An uncaught exception is a programmer error (bad artifact shape, missing
