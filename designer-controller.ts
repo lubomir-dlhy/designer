@@ -673,7 +673,8 @@ export class DesignerController {
 
   async _submitPrompt(prompt: string, sel?: { textarea?: string; sendButton?: string | string[] }): Promise<void> {
     const promptTextarea = sel?.textarea ?? this.selectors.composer.promptTextarea;
-    const sendButton = sel?.sendButton ?? this.selectors.composer.sendButton;
+    const sendButton =
+      sel?.sendButton ?? orderedBranches(this.selectors.composer.sendButton, this.selectors.composerLegacy?.sendButton);
     // Ordered branches, resolved in-page one at a time. A comma-joined list
     // would hand back whichever matched first in DOCUMENT ORDER — so a stale or
     // hidden duplicate earlier in the page could win over the canonical control
@@ -1001,7 +1002,12 @@ export class DesignerController {
   async listProjects(): Promise<Array<{ name: string | null; sub: string | null; url: string | null }>> {
     await this.openGuarded(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
-    await this.browser.waitFor(this.selectors.home.projectsList).catch(() => null);
+    // Presence-only wait, so canonical+legacy may be probed together — otherwise
+    // a degraded home (canonical list testid gone) burns the full timeout before
+    // proceeding, even though the scrape below would have worked.
+    await this.browser
+      .waitFor(presenceSelector(this.selectors.home.projectsList, this.selectors.homeLegacy?.projectsList))
+      .catch(() => null);
     const json = await this.browser.evalValue<Array<{ name: string | null; sub: string | null; url: string | null }>>(
       `(() => {
         // 2026-07 redesign: projects moved from a flat list of text-bearing links

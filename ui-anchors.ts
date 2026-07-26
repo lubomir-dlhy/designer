@@ -343,6 +343,18 @@ export const UI_ANCHORS: AnchorDef[] = [
     check: async (b) => checkWithLegacy(b, SEL.home.projectsList, SEL.homeLegacy?.projectsList, 'home.projectsList')
   },
   {
+    id: 'home.projectLink',
+    category: 'home',
+    // The selector `listProjects()` actually scrapes. It had NO anchor: the
+    // probe read green off projectsList/projectCard while `designer list` could
+    // return []. `home.projectCard` carries the link only as a LEGACY branch,
+    // which checkWithLegacy never evaluates while the canonical row matches — so
+    // it could not stand in for this.
+    description: 'per-project link (a[href*="/design/p/"]) — the listProjects scrape target',
+    requires: 'home',
+    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectLink) })
+  },
+  {
     id: 'home.projectCard',
     category: 'home',
     description: 'project row ([data-testid="project-row"])',
@@ -411,8 +423,11 @@ export const UI_ANCHORS: AnchorDef[] = [
     description: 'send button',
     requires: 'session',
     // The 2026-06 build dropped data-testid="chat-send-button"; the button is
-    // now only identifiable by its title="Send (Enter)". Match either.
-    check: async (b) => ({ ok: await hasSelector(b, SEL.composer.sendButton) })
+    // now only identifiable by its title="Send (Enter)". These were packed into
+    // ONE comma-OR selector, so this anchor reported a clean `ok` while matching
+    // only the superseded branch — the exact masking `degraded` exists to
+    // surface, sitting live in the repo that introduced it.
+    check: async (b) => checkWithLegacy(b, SEL.composer.sendButton, SEL.composerLegacy?.sendButton, 'composer.sendButton')
   },
   {
     id: 'session.htmlViewerIframe',

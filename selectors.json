@@ -29,10 +29,13 @@
   },
   "composer": {
     "promptTextarea": "[data-testid=\"chat-composer-input\"]",
-    "sendButton": "[data-testid=\"chat-send-button\"], button[title^=\"Send (\"]",
+    "sendButton": "[data-testid=\"chat-send-button\"]",
     "stopButton": null,
     "attachButton": "button[aria-label=\"Attach file\"]",
     "modelButton": "[data-testid=\"model-selector-button\"]"
+  },
+  "composerLegacy": {
+    "sendButton": "button[title^=\"Send (\"]"
   },
   "preview": {
     "iframeOrContainer": "[data-testid=\"html-viewer-iframe\"]",

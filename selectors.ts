@@ -26,6 +26,7 @@ export interface Selectors {
     projectsList?: string;
     projectCard?: string;
   };
+  composerLegacy?: { sendButton?: string };
   home: {
     creator: string;
     nameInput: string;

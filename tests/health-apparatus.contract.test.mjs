@@ -496,3 +496,61 @@ test('the artifact is written through the scrubber, not the raw payload', () => 
   const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/ci-health.ts'), 'utf8');
   assert.match(src, /writeFileSync\(outFile, JSON\.stringify\(scrubDeep\(payload\)/, 'the write boundary must scrub');
 });
+
+// --- Theme A: enforce the selector contract over ALL of selectors.json ---
+// The prior guard iterated `sel.home` only, so login.*, composer.*, preview.*
+// and messages.* were unguarded — and a live violation was sitting in
+// composer.sendButton, whose two branches ui-anchors.ts itself documents as
+// canonical + superseded.
+
+// Values allowed to contain a comma, with the reason. A comma is otherwise a
+// packed canonical+legacy pair, which querySelector resolves by document order.
+const MULTI_BRANCH_OK = {
+  'login.signedInIndicator':
+    'genuine cross-surface disjunction (in-session composer OR home composer), not canonical+legacy — and presence-only, so which one matches is irrelevant'
+};
+
+// Selector keys with no ui-anchors.ts anchor, with the reason each is exempt.
+// Anything NOT listed here must be anchored: an unanchored selector on a scrape
+// path is how `home.projectLink` drove listProjects with the probe blind to it.
+const UNANCHORED_OK = {
+  'composer.stopButton': 'null in the current capture — nothing to probe',
+  'composer.attachButton': 'not on any scrape path; unused affordance',
+  'composer.modelButton': 'not on any scrape path; unused affordance',
+  'preview.exportButtonText': 'label text, not a selector; share.shareButton covers the surface',
+  'preview.shareButtonText': 'label text, not a selector; share.shareButton covers the surface',
+  'preview.emptyStateHeading': 'label text used for an empty-state assertion, not a probe',
+  'messages.generatingIndicator': 'null in the current capture — nothing to probe',
+  'interstitials.continueHere': 'button label; interstitials.ts owns detection and is unit-tested'
+};
+
+const selectorGroups = () => {
+  const sel = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8'));
+  return Object.entries(sel).filter(([g, v]) => !g.startsWith('_') && v && typeof v === 'object');
+};
+
+test('no selector packs multiple branches into one comma-OR value', () => {
+  const offenders = [];
+  for (const [group, entries] of selectorGroups()) {
+    for (const [k, v] of Object.entries(entries)) {
+      if (k.startsWith('_') || typeof v !== 'string') continue;
+      const key = `${group}.${k}`;
+      if (v.includes(',') && !MULTI_BRANCH_OK[key]) offenders.push(`${key} = ${v}`);
+    }
+  }
+  assert.deepEqual(offenders, [], `packed comma-OR selectors (document-order hazard + masks degraded): ${offenders.join(' | ')}`);
+});
+
+test('every selector is either anchored in ui-anchors.ts or explicitly exempt', () => {
+  // Normalize optional chaining so `SEL.homeLegacy?.createButton` counts.
+  const anchors = fs.readFileSync(path.join(REPO_ROOT, 'ui-anchors.ts'), 'utf8').replace(/\?\./g, '.');
+  const unanchored = [];
+  for (const [group, entries] of selectorGroups()) {
+    for (const k of Object.keys(entries)) {
+      if (k.startsWith('_')) continue;
+      const key = `${group}.${k}`;
+      if (!anchors.includes(key) && !UNANCHORED_OK[key]) unanchored.push(key);
+    }
+  }
+  assert.deepEqual(unanchored, [], `selectors with no health anchor and no documented exemption: ${unanchored.join(', ')}`);
+});
