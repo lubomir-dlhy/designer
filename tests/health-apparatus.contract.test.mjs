@@ -200,21 +200,42 @@ test('no canonical selector smuggles a comma-OR legacy branch back in', () => {
 
 // --- PR #131 review (Codex P2 x2) ---
 
-test('doctor spawnError is scrubbed of the runner home path before it is published', async () => {
+// A home dir survives scrubbing only as the literal `<redacted>` token.
+const LEAKED_MACOS = /\/Users\/(?!<redacted>)[^/\s]+/;
+const LEAKED_LINUX = /\/home\/(?!<redacted>)[^/\s]+/;
+
+test('the scrubber redacts home-dir paths in spawn errors', async () => {
   // Node embeds the absolute executable path in spawn errors. The health
-  // artifact is a world-downloadable public-repo artifact for 30 days, and the
-  // same string also reaches the run summary + a ::warning annotation, so the
-  // scrub has to happen at the source, not at payload-assembly time.
+  // artifact is world-downloadable for 30 days, and the same string also reaches
+  // the run summary + a ::warning annotation, so the scrub happens at the source.
+  //
+  // Synthetic inputs on purpose: asserting against THIS checkout's real path
+  // would make the test pass or fail on where the repo happens to live (it would
+  // fail outright in a /workspace or Windows checkout), which is the
+  // green-by-accident failure this whole PR is about.
+  const { scrubForTest } = await import('../scripts/ci-health.ts');
+  for (const raw of [
+    'ENOENT: spawnSync /Users/alice/dev/designer/bin/designer ENOENT',
+    'ENOENT: spawnSync /home/runner/work/designer/designer/bin/designer ENOENT'
+  ]) {
+    const scrubbed = scrubForTest(raw);
+    assert.doesNotMatch(scrubbed, LEAKED_MACOS, `macOS username leaked from: ${raw}`);
+    assert.doesNotMatch(scrubbed, LEAKED_LINUX, `Linux username leaked from: ${raw}`);
+    assert.match(scrubbed, /ENOENT/, 'scrubbing must preserve the diagnostic');
+  }
+});
+
+test('a real spawn failure is publishable — no unredacted home dir, whatever the checkout path', async () => {
   const { spawnSync } = await import('node:child_process');
   const r = spawnSync(path.join(REPO_ROOT, 'bin', 'designer'), ['doctor']);
   assert.ok(r.error, 'expected ENOENT for the extensionless path');
-  assert.match(r.error.message, /\/Users\/|\/home\//, 'precondition: raw message carries a home path');
-
+  // No precondition on the raw message's shape — the invariant is about what
+  // gets PUBLISHED, and it must hold from any checkout location.
   const { scrubForTest } = await import('../scripts/ci-health.ts');
-  const scrubbed = scrubForTest(`${r.error.code}: ${r.error.message}`);
-  assert.doesNotMatch(scrubbed, /\/Users\/(?!<redacted>)[^/\s]+/, 'macOS username leaked');
-  assert.doesNotMatch(scrubbed, /\/home\/(?!<redacted>)[^/\s]+/, 'Linux username leaked');
-  assert.match(scrubbed, /ENOENT/, 'scrubbing must preserve the diagnostic');
+  const published = scrubForTest(`${r.error.code}: ${r.error.message}`);
+  assert.doesNotMatch(published, LEAKED_MACOS, 'macOS username leaked');
+  assert.doesNotMatch(published, LEAKED_LINUX, 'Linux username leaked');
+  assert.match(published, /ENOENT/, 'scrubbing must preserve the diagnostic');
 });
 
 test('every ProbeStatus is rendered distinctly by the CLI health reporter', () => {
