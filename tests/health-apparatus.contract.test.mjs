@@ -625,3 +625,20 @@ test('idOf admits a trailing slash but still rejects project subroutes', () => {
   assert.ok(re.test(`/design/p/${uuid}/`), 'trailing slash must match (#F8)');
   assert.ok(!re.test(`/design/p/${uuid}/settings`), 'subroutes must NOT match — they become phantom projects');
 });
+
+test('the turn-RPC canary resolves the send button through both branches', () => {
+  // Residual found sweeping my own #F1 fix: splitting composer.sendButton into
+  // canonical + legacy left the canary querying the CANONICAL selector raw —
+  // and ui-anchors itself records that data-testid="chat-send-button" was
+  // dropped in the 2026-06 build, so the canary would have found nothing.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'ui-anchors.ts'), 'utf8');
+  const start = src.indexOf('async function submitTurnRpcCanary');
+  const end = src.indexOf('async function checkTurnRpcContract');
+  assert.ok(start > 0 && end > start, 'canary bounds not found — update this test');
+  const canary = src.slice(start, end);
+  assert.ok(
+    !/querySelector\(\$\{JSON\.stringify\(SEL\.composer\.sendButton\)\}\)/.test(canary),
+    'canary still queries the canonical send button raw — it would miss the live legacy branch'
+  );
+  assert.match(canary, /SEND_BRANCHES_JSON/, 'canary must resolve ordered branches');
+});

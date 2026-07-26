@@ -4,7 +4,7 @@ import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from '
 import { isCdpEnabled } from './cdp-env.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
-import { getSelectors } from './selectors.ts';
+import { getSelectors, orderedBranches } from './selectors.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -153,6 +153,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Ordered canonical-then-legacy branches for the composer send button, embedded
+// into the in-page snippets below. Splitting composer.sendButton into
+// canonical + composerLegacy made the canonical selector alone insufficient here:
+// ui-anchors itself records that data-testid="chat-send-button" was dropped in
+// the 2026-06 build, so a raw canonical lookup finds nothing on the live UI.
+// Resolved in order rather than comma-joined, so a stale duplicate earlier in
+// the document cannot win the click.
+const SEND_BRANCHES_JSON = JSON.stringify(orderedBranches(SEL.composer.sendButton, SEL.composerLegacy?.sendButton));
+
 async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; detail?: string }> {
   const prompt =
     'Health check: answer in chat only with the single word ok. Do not create, modify, or delete files.';
@@ -192,7 +201,8 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
     const disabled = await browser
       .evalValue<boolean>(
         `(() => {
-          const b = document.querySelector(${JSON.stringify(SEL.composer.sendButton)});
+          let b = null;
+          for (const s of ${SEND_BRANCHES_JSON}) { b = document.querySelector(s); if (b) break; }
           return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
         })()`
       )
@@ -204,7 +214,8 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
   const clicked = await browser
     .evalValue<boolean>(
       `(() => {
-        const b = document.querySelector(${JSON.stringify(SEL.composer.sendButton)});
+        let b = null;
+        for (const s of ${SEND_BRANCHES_JSON}) { b = document.querySelector(s); if (b) break; }
         if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
         b.click();
         return true;
