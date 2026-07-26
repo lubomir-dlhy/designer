@@ -157,14 +157,22 @@ export function probeVerdict(input: { anchorFail: boolean; doctorSpawnError: str
   // ONLY a failure to launch means the probe did not run. A non-zero doctor exit
   // deliberately does NOT gate.
   //
-  // `designer doctor` exits 2 if ANY of its checks fails, several of which are
-  // orthogonal to whether this probe is valid — and one fires routinely: doctor
-  // runs BEFORE the probe navigates, and ensureCdp() may have just relaunched
-  // Chrome, so the "claude.ai/design tab" check (status 'fail') sees a browser
-  // with no design tab yet. Gating on the exit code would therefore fail the
-  // daily job on ordinary runs and permanently block `Close stale drift PRs on
-  // green`, turning a diagnostic into an outage. A non-zero exit is surfaced via
-  // the artifact + an ::error annotation instead; it is information, not a gate.
+  // Reproduced 2026-07-26 rather than argued: doctor was run against a CDP Chrome
+  // with NO design tab open and exited 0 — that check is status 'warn' (⚠), not
+  // 'fail'. An earlier revision of this comment claimed it fired routinely after
+  // an ensureCdp relaunch; that was wrong, and this corrects it.
+  //
+  // Doctor's six real 'fail' branches: node_modules missing, agent-browser
+  // missing, selectors.json missing, CDP HTTP error, signed-out, MCP
+  // registration. Only the LAST is orthogonal to whether this probe is valid,
+  // and the rest are already covered without the exit code — signed-out fails the
+  // login.signedIn anchor (-> drift), and a missing selectors.json or
+  // agent-browser makes the probe itself throw (-> incomplete).
+  //
+  // So gating on the exit code buys almost nothing while risking a block on
+  // `Close stale drift PRs on green` for an unrelated Claude Code registration
+  // fault. A non-zero exit is surfaced in the artifact + an ::error annotation:
+  // information, not a gate.
   if (input.doctorSpawnError !== null) return 'incomplete';
   return 'ok';
 }

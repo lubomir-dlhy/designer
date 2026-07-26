@@ -282,11 +282,13 @@ test('a doctor that never launched is incomplete, NOT green and NOT drift', () =
 });
 
 test('a NON-ZERO doctor exit does not gate the workflow', () => {
-  // Deliberate. doctor exits 2 if any of its checks fails, and one fires on
-  // ordinary runs: doctor runs before the probe navigates, and ensureCdp() may
-  // have just relaunched Chrome, so the "claude.ai/design tab" check sees no
-  // design tab. Gating here would fail the daily job routinely and permanently
-  // block `Close stale drift PRs on green` — a diagnostic becoming an outage.
+  // Deliberate, on reproduced evidence: doctor run against a CDP Chrome with no
+  // design tab exits 0 (that check is 'warn', not 'fail'). Of doctor's six real
+  // 'fail' branches only MCP-registration is orthogonal to probe validity, and
+  // the rest are already covered — signed-out fails login.signedIn (-> drift),
+  // a missing selectors.json/agent-browser makes the probe throw (-> incomplete).
+  // Gating on the exit code therefore buys ~nothing and risks blocking stale-PR
+  // cleanup on an unrelated Claude Code registration fault.
   assert.equal(probeVerdict({ anchorFail: false, doctorSpawnError: null, doctorExitCode: 2 }), 'ok');
   // A failure to LAUNCH is still incomplete — that is the case where the
   // tooling half genuinely did not run.
