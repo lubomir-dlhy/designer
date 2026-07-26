@@ -152,7 +152,14 @@ jobs:
           retention-days: 30
 
       - name: Close stale drift PRs on green
-        if: steps.probe.outcome == 'success'
+        # Gated on the probe's own verdict, not on step outcome. A tooling fault
+        # (doctor never launched) used to exit 0 and land here, auto-closing a
+        # legitimate open drift PR while half the probe was broken.
+        #
+        # Also requires zero degraded anchors: an all-degraded run still yields
+        # verdict `ok` (the tool works), and closing the drift PR that documents
+        # the rot is precisely the wrong response to unrepaired drift.
+        if: steps.probe.outputs.verdict == 'ok' && steps.probe.outputs.degraded == '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TODAY: ${{ steps.stamp.outputs.date }}
@@ -177,7 +184,9 @@ jobs:
             done
 
       - name: Open selectors-drift PR
-        if: steps.probe.outcome == 'failure' && (github.event_name != 'workflow_dispatch' || inputs.open-pr-on-fail)
+        # `drift` only — an `incomplete` verdict must NOT be filed as a
+        # claude.ai redesign; it is a broken probe and gets its own step below.
+        if: steps.probe.outputs.verdict == 'drift' && (github.event_name != 'workflow_dispatch' || inputs.open-pr-on-fail)
         uses: peter-evans/create-pull-request@v8
         with:
           # Keep this checked into the repo so a human can compare what the
@@ -216,3 +225,31 @@ jobs:
             4. If the change is a real regression in the live UI: file upstream
                + bump the patch version when the workaround lands.
             5. Close this PR once the fix lands or once `chromeUrl` recovers.
+
+      # Third path: the probe could not fully run (doctor never launched, or
+      # reported a broken toolchain). This is NOT selector drift, so no drift PR
+      # is opened above — but it must not pass either. The probe step carries
+      # `continue-on-error: true`, so without this the job would end green with
+      # only an annotation to show for it, which is precisely how a half-broken
+      # probe stayed invisible. Runs last so the artifact + streak are saved first.
+      - name: Fail on an incomplete probe
+        if: steps.probe.outputs.verdict == 'incomplete'
+        run: |
+          echo "::error title=Health probe did not fully run::verdict=incomplete — the UI anchors may be green but the tooling half of the probe is broken. This is not selector drift; see the doctor block in artifact health-${{ github.run_id }}."
+          exit 1
+
+      # Backstop: the probe emitted no recognizable verdict at all. Every exit
+      # path inside ci-health routes through exitWith(), so this should be
+      # unreachable — but a hard kill (OOM, runner timeout, SIGKILL) terminates
+      # the process before any output is written, and `continue-on-error: true`
+      # means an unset verdict would otherwise leave every gate above false and
+      # the job green. Fails closed on anything that is not one of the three
+      # known verdicts.
+      - name: Fail when the probe emitted no verdict
+        if: >-
+          steps.probe.outputs.verdict != 'ok' &&
+          steps.probe.outputs.verdict != 'drift' &&
+          steps.probe.outputs.verdict != 'incomplete'
+        run: |
+          echo "::error title=Health probe emitted no verdict::verdict='${{ steps.probe.outputs.verdict }}' (step outcome: ${{ steps.probe.outcome }}). The probe died before publishing a result — treat as a broken probe, not a green run."
+          exit 1

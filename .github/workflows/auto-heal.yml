@@ -89,6 +89,10 @@ jobs:
             --color FFB4A2 \
             --description ">=5 anchors regressed at once — needs human triage" \
             2>/dev/null || true
+          gh label create auto-heal-blind \
+            --color D00000 \
+            --description "Anchors are failing but none are auto-patchable — auto-heal cannot fix these" \
+            2>/dev/null || true
 
       - name: Setup node
         uses: actions/setup-node@v6
@@ -175,3 +179,21 @@ jobs:
             new selector matches the intended element before merging — auto-
             heal validates that the *anchor probes green*, not that the
             selector targets the *right* DOM node.
+
+      # Structural blindness is not a best-effort miss — it is a standing defect
+      # in auto-heal itself: anchors are failing and the patcher cannot express a
+      # fix for ANY of them, so no future run will resolve it either. The triage
+      # step emits an ::error annotation, but annotations do not change a step's
+      # outcome, so without this gate the workflow still concluded success in
+      # exactly the scenario this PR exists to stop reporting as green.
+      #
+      # Runs last so the label + drift-PR comment posted during triage land first.
+      - name: Fail when auto-heal is structurally blind
+        # Gated on the dedicated `blind` output, not on `reason`: a wholesale
+        # regression that is ALSO unpatchable emits reason=wholesale-redesign,
+        # and keying on reason would miss exactly the worst case — many anchors
+        # down and auto-heal powerless to touch any of them.
+        if: steps.triage.outputs.blind == 'true'
+        run: |
+          echo "::error title=auto-heal cannot fix the failing anchors::${{ steps.triage.outputs.blind-anchors }} — these have failed for 2+ runs and none are auto-patchable. This will not resolve on its own; repair the selector by hand or extend the patcher."
+          exit 1

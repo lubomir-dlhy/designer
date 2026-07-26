@@ -240,17 +240,29 @@ async function main(): Promise<void> {
           ok: !fail,
           generatedAt: new Date().toISOString(),
           url,
-          counts: { ok: counts['ok'] || 0, fail: counts['fail'] || 0, skip: counts['skip'] || 0 },
+          // `degraded` is counted explicitly: omitting it made the totals fail to
+          // add up to results.length, and silently hid the canonical-selector rot
+          // this status exists to surface.
+          counts: {
+            ok: counts['ok'] || 0,
+            degraded: counts['degraded'] || 0,
+            fail: counts['fail'] || 0,
+            skip: counts['skip'] || 0
+          },
           results
         };
         console.log(JSON.stringify(payload, null, 2));
       } else {
-        const icon = (s: string) => (s === 'ok' ? '✓' : s === 'fail' ? '✗' : '·');
+        // `degraded` gets its own glyph — sharing `·` with skip made "running on
+        // a superseded selector" look like "not probed".
+        const icon = (s: string) => (s === 'ok' ? '✓' : s === 'fail' ? '✗' : s === 'degraded' ? '~' : '·');
         for (const r of results) {
           const line = `${icon(r.status)} [${r.category}] ${r.id} — ${r.description}${r.detail ? ' (' + r.detail + ')' : ''}`;
           console.log(line);
         }
-        console.log(`\n${counts['ok'] || 0} ok, ${counts['fail'] || 0} fail, ${counts['skip'] || 0} skip`);
+        console.log(
+          `\n${counts['ok'] || 0} ok, ${counts['degraded'] || 0} degraded, ${counts['fail'] || 0} fail, ${counts['skip'] || 0} skip`
+        );
       }
       if (fail) process.exit(2);
       break;

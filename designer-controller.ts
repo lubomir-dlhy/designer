@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
-import { getSelectors, type Selectors } from './selectors.ts';
+import { getSelectors, orderedBranches, presenceSelector, type Selectors } from './selectors.ts';
 import { ensureCdpUp } from './cdp-ensure.ts';
 import { RunStateObserver } from './run-state.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
@@ -346,8 +346,8 @@ export class DesignerController {
     for (const cand of candidates) {
       await this.browser.activateTab(cand.index).catch(() => null);
       const composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
-      const homeOk = this.selectors.login.signedInIndicator
-        ? await this.browser.isVisible(this.selectors.login.signedInIndicator).catch(() => false)
+      const homeOk = this._signedInMarker()
+        ? await this.browser.isVisible(this._signedInMarker()).catch(() => false)
         : false;
       if (composerOk || homeOk) return { matched: true, candidates: candidates.length };
     }
@@ -546,8 +546,8 @@ export class DesignerController {
     const interstitials = await this.clearInterstitials();
     if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates);
 
-    const homeOk = this.selectors.login.signedInIndicator
-      ? await this.browser.isVisible(this.selectors.login.signedInIndicator).catch(() => false)
+    const homeOk = this._signedInMarker()
+      ? await this.browser.isVisible(this._signedInMarker()).catch(() => false)
       : false;
     const sessionOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
     if (!homeOk && !sessionOk) {
@@ -627,7 +627,7 @@ export class DesignerController {
       // the click.
       await this._submitPrompt(seed, {
         textarea: this.selectors.home.creator,
-        sendButton: this.selectors.home.createButton
+        sendButton: orderedBranches(this.selectors.home.createButton, this.selectors.homeLegacy?.createButton)
       });
 
       let inSession = false;
@@ -664,9 +664,23 @@ export class DesignerController {
   // composer — the home create surface is a plain <textarea> + button[title="Create"]
   // (see createSession). The fill branch already handles both <textarea> (native
   // value setter) and contenteditable (synthetic paste), so only the selectors differ.
-  async _submitPrompt(prompt: string, sel?: { textarea?: string; sendButton?: string }): Promise<void> {
+  // Presence-only marker for "is this tab a signed-in claude.ai/design surface".
+  // Canonical + legacy joined is safe HERE because the caller only asks whether
+  // one is present, never which element to act on.
+  _signedInMarker(): string {
+    return presenceSelector(this.selectors.login.signedInIndicator, this.selectors.loginLegacy?.signedInIndicator);
+  }
+
+  async _submitPrompt(prompt: string, sel?: { textarea?: string; sendButton?: string | string[] }): Promise<void> {
     const promptTextarea = sel?.textarea ?? this.selectors.composer.promptTextarea;
-    const sendButton = sel?.sendButton ?? this.selectors.composer.sendButton;
+    const sendButton =
+      sel?.sendButton ?? orderedBranches(this.selectors.composer.sendButton, this.selectors.composerLegacy?.sendButton);
+    // Ordered branches, resolved in-page one at a time. A comma-joined list
+    // would hand back whichever matched first in DOCUMENT ORDER — so a stale or
+    // hidden duplicate earlier in the page could win over the canonical control
+    // and we would click the wrong button.
+    const sendButtons = Array.isArray(sendButton) ? sendButton.filter(Boolean) : [sendButton];
+    const sendButtonsJson = JSON.stringify(sendButtons);
     await this.browser.waitFor(promptTextarea);
     // The composer has shipped as both a React-controlled <textarea> and a
     // ProseMirror contenteditable <div> — branch on what's actually there.
@@ -718,7 +732,8 @@ export class DesignerController {
         `(() => {
           const el = document.querySelector(${JSON.stringify(promptTextarea)});
           const hasText = !!el && (el instanceof HTMLTextAreaElement ? el.value : (el.textContent || '')).trim().length > 0;
-          const b = document.querySelector(${JSON.stringify(sendButton)});
+          let b = null;
+          for (const s of ${sendButtonsJson}) { b = document.querySelector(s); if (b) break; }
           const enabled = !!b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
           return hasText && enabled;
         })()`
@@ -727,8 +742,9 @@ export class DesignerController {
     }
     await this.browser.evalValue<boolean>(
       `(() => {
-        const b = document.querySelector(${JSON.stringify(sendButton)});
-        if (!b) throw new Error('send button not found');
+        let b = null;
+        for (const s of ${sendButtonsJson}) { b = document.querySelector(s); if (b) break; }
+        if (!b) throw new Error('send button not found (tried: ' + ${sendButtonsJson}.join(' | ') + ')');
         b.click();
         return true;
       })()`
@@ -986,34 +1002,92 @@ export class DesignerController {
   async listProjects(): Promise<Array<{ name: string | null; sub: string | null; url: string | null }>> {
     await this.openGuarded(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
-    await this.browser.waitFor(this.selectors.home.projectsList).catch(() => null);
+    // Presence-only wait, so canonical+legacy may be probed together — otherwise
+    // a degraded home (canonical list testid gone) burns the full timeout before
+    // proceeding, even though the scrape below would have worked.
+    await this.browser
+      .waitFor(presenceSelector(this.selectors.home.projectsList, this.selectors.homeLegacy?.projectsList))
+      .catch(() => null);
     const json = await this.browser.evalValue<Array<{ name: string | null; sub: string | null; url: string | null }>>(
       `(() => {
         // 2026-07 redesign: projects moved from a flat list of text-bearing links
         // to a <section data-testid="projects-list"> of <tr data-testid=
         // "project-row">. The row's <a href="/design/p/<uuid>"> is now an EMPTY
-        // overlay link — reading its text (what the 2026-06 scrape did) yields
-        // null for every project. The name now lives in the row's first cell, and
-        // is mirrored onto the anchor's aria-label. Resolve through all three, in
-        // most- to least-structured order, so this survives either layout:
-        // anchor text (old flat list) -> aria-label -> the row's first cell.
-        // Anchor-keyed, not row-keyed, because the href is the only place the
-        // uuid appears; dedupe by uuid (a row can wrap more than one anchor).
-        const links = Array.from(document.querySelectorAll('a[href*="/design/p/"]'));
-        const seen = new Set();
-        const out = [];
-        for (const a of links) {
-          const href = a.href || a.getAttribute('href') || '';
-          const m = href.match(/\\/design\\/p\\/([a-f0-9-]+)/i);
-          if (!m || seen.has(m[1])) continue;
-          seen.add(m[1]);
-          const row = a.closest('[data-testid="project-row"], tr');
+        // overlay link — reading its text (what the 2026-06 scrape did) yielded
+        // null for every project. The name lives in the row's first cell and is
+        // mirrored onto the anchor's aria-label.
+        const LINK_SEL = ${JSON.stringify(this.selectors.home.projectLink)};
+        const ROW_SEL = ${JSON.stringify(this.selectors.home.projectCard)};
+
+        // Parse the uuid from the PATHNAME, not a substring of the whole href:
+        // a settings/breadcrumb link, or any URL carrying a project link in a
+        // query param, would otherwise match and contribute its own text as a
+        // project name.
+        const idOf = (a) => {
+          const raw = a.getAttribute('href') || '';
+          let pathname = raw;
+          try { pathname = new URL(a.href || raw, document.baseURI).pathname; } catch (e) { /* keep raw */ }
+          // Optional trailing slash, but NOT arbitrary subroutes. The review
+          // proposed (?:\\/|$), which would also admit /design/p/<uuid>/settings —
+          // re-opening the decoy vector an earlier round closed, where a nav or
+          // breadcrumb link outside any row becomes a phantom project named
+          // after its own link text.
+          const m = pathname.match(/^\\/design\\/p\\/([0-9a-f-]{8,})\\/?$/i);
+          return m ? m[1] : null;
+        };
+
+        // Name candidates, tagged with WHERE they came from. Source is what
+        // decides, not string length: a control link ("Open", "Settings") is
+        // shorter than the real name, so a shortest-wins rule picks the button
+        // label on exactly the multi-link row this function exists to handle.
+        //
+        // Priority, most to least authoritative:
+        //   rowCell    — the row's name column; shared by every link in the row,
+        //                so multi-link rows converge on one answer
+        //   ariaLabel  — mirrors the name on the overlay link
+        //   anchorText — the legacy flat-list layout, where the name WAS the
+        //                link text; also the most likely to be a control label,
+        //                hence last.
+        const NAME_SOURCES = ['rowCell', 'ariaLabel', 'anchorText'];
+        const candidatesFrom = (a) => {
+          // closest() with a comma list returns the NEAREST ancestor matching
+          // EITHER branch — so a nested <tr> would beat the real project row.
+          // Try the specific row first, only then the generic tag.
+          const row = a.closest(ROW_SEL) || a.closest('tr');
           const firstCell = row ? row.querySelector('td') : null;
-          const name =
-            (a.textContent || '').trim() ||
-            (a.getAttribute('aria-label') || '').trim() ||
-            (firstCell ? (firstCell.textContent || '').trim() : '');
-          out.push({ name: name || null, sub: null, url: href });
+          return {
+            rowCell: firstCell ? (firstCell.textContent || '').trim() : '',
+            ariaLabel: (a.getAttribute('aria-label') || '').trim(),
+            anchorText: (a.textContent || '').trim()
+          };
+        };
+
+        // Collect ALL candidates per uuid before choosing. The previous version
+        // marked a uuid seen at first sight, so when a row carried more than one
+        // anchor (an icon/thumbnail link before the named overlay link) the
+        // nameless one won and the good one was skipped forever — emitting
+        // name:null for a project whose name was right there.
+        const byId = new Map();
+        for (const a of Array.from(document.querySelectorAll(LINK_SEL))) {
+          const id = idOf(a);
+          if (!id) continue;
+          const href = a.href || a.getAttribute('href') || '';
+          const entry = byId.get(id) || { url: href, sources: {} };
+          if (!entry.url) entry.url = href;
+          const c = candidatesFrom(a);
+          // First non-empty value per source wins; later links only fill gaps,
+          // so one link's missing aria-label cannot erase another's.
+          for (const k of NAME_SOURCES) if (!entry.sources[k] && c[k]) entry.sources[k] = c[k];
+          byId.set(id, entry);
+        }
+
+        const out = [];
+        for (const [, entry] of byId) {
+          let name = null;
+          for (const k of NAME_SOURCES) {
+            if (entry.sources[k]) { name = entry.sources[k]; break; }
+          }
+          out.push({ name: name || null, sub: null, url: entry.url });
         }
         return out;
       })()`

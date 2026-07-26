@@ -19,15 +19,88 @@
 //
 // All failure modes exit 0 — auto-heal is best-effort. The drift PR opened
 // by daily-health stays as the human-readable diagnostic regardless.
+//
+// ONE carve-out: `reason=blind-unpatchable` (nothing auto-patchable while
+// anchors are failing) still exits 0 here, but the workflow gates on that reason
+// and fails the job. That state is not a best-effort miss — it is a standing
+// defect in auto-heal that no future run resolves, and an ::error annotation
+// alone does not change a step's outcome.
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { REPO_ROOT } from '../repo-root.ts';
 import { createBrowser } from '../browser.ts';
 import { canPatch, findAnchor, patchSelector } from './anchor-patcher.ts';
+import { isFailing } from '../ui-anchors.ts';
+import { getSelectors } from '../selectors.ts';
+
+const SEL = getSelectors();
+
+/**
+ * Split triage candidates by WHY each one can or cannot be healed.
+ *
+ * This exists because the old triage collapsed two opposite situations into one
+ * log line ("all candidates either complex or in cooldown"):
+ *
+ *   - cooldown        -> temporary; it resolves on its own in COOLDOWN_DAYS
+ *   - not patchable   -> PERMANENT; it will never resolve without a code change
+ *
+ * Conflating them is how auto-heal ran green for the nine days of #118-#126.
+ * Centralizing selectors into selectors.json (a correct decision) rewrote every
+ * anchor from `hasSelector(b, '<literal>')` to `hasSelector(b, SEL.home.creator)`,
+ * and the AST patcher only rewrites string literals — so EVERY anchor became
+ * unpatchable at once. `home.creator` sat at streak 9 while auto-heal reported
+ * conclusion "success" daily. Structural blindness must be loud and must not
+ * look like "nothing to do".
+ *
+ * Pure + exported so the decision is unit-testable without a browser, an API
+ * key, or a live artifact.
+ */
+export interface CandidateClassification {
+  /** Healable right now. */
+  eligible: string[];
+  /** Permanently blind: the patcher cannot express a fix for this anchor. */
+  unpatchable: string[];
+  /** Temporarily skipped; will become eligible again. */
+  cooling: string[];
+  /** Failed anchor-id shape validation (shell-injection gate). */
+  invalid: string[];
+}
+
+export function classifyCandidates(
+  candidates: string[],
+  probes: {
+    canPatch: (id: string) => boolean;
+    inCooldown: (id: string) => boolean;
+    isValidId: (id: string) => boolean;
+  }
+): CandidateClassification {
+  const out: CandidateClassification = { eligible: [], unpatchable: [], cooling: [], invalid: [] };
+  for (const id of candidates) {
+    if (!probes.isValidId(id)) out.invalid.push(id);
+    else if (!probes.canPatch(id)) out.unpatchable.push(id);
+    else if (probes.inCooldown(id)) out.cooling.push(id);
+    else out.eligible.push(id);
+  }
+  return out;
+}
+
+/**
+ * True when auto-heal has real work queued but cannot act on ANY of it for
+ * structural reasons. This is the state that must never be silent again.
+ */
+export function isStructurallyBlind(c: CandidateClassification): boolean {
+  return c.eligible.length === 0 && c.unpatchable.length > 0;
+}
+
+/** Anchor ids the patcher can currently rewrite — reality, not intent. */
+export function patchableAnchorIds(anchorsSource: string, ids: string[]): string[] {
+  return ids.filter((id) => canPatch(anchorsSource, id));
+}
 
 const HEALTH_DIR = path.join(REPO_ROOT, 'artifacts', 'health');
 const STREAK_PATH = path.join(HEALTH_DIR, 'streak.json');
@@ -41,8 +114,14 @@ const ANTHROPIC_MODEL = 'claude-opus-4-7';
 // Navigation targets for the fresh snapshot auto-heal captures on the runner
 // (daily-health no longer uploads page.html/page.png — see captureCurrentSnapshot).
 const HOME_URL = 'https://claude.ai/design';
-const HOME_READY_SEL = '[data-testid="project-creator"]';
-const SESSION_READY_SEL = '[data-testid="chat-composer-input"]';
+// Second stale copy of the readiness gates (ci-health.ts had the other). The
+// home one was `[data-testid="project-creator"]`, dead since a redesign, so the
+// snapshot auto-heal feeds to the LLM was captured after a full timeout with no
+// readiness guarantee — i.e. possibly of a half-painted page, which is a bad
+// basis for inferring a replacement selector. Sourced from selectors.json so a
+// drift repair fixes every consumer at once.
+const HOME_READY_SEL = SEL.home.creator;
+const SESSION_READY_SEL = SEL.composer.promptTextarea;
 const HTML_CAP_BYTES = 60_000;
 
 // Priority: session anchors regressing breaks the canary loop hardest, so
@@ -61,7 +140,10 @@ interface ProbeResult {
   category: 'home' | 'session' | 'share' | 'pattern';
   description: string;
   requires: 'home' | 'session' | 'any';
-  status: 'ok' | 'fail' | 'skip';
+  // Mirrors ProbeStatus in ui-anchors.ts. `degraded` (working only via a
+  // superseded selector branch) is deliberately NOT treated as a fail below —
+  // but the type must admit it, or reading a current artifact is a lie.
+  status: 'ok' | 'degraded' | 'fail' | 'skip';
   detail?: string;
   phase?: 'home' | 'session';
 }
@@ -71,7 +153,7 @@ interface ArtifactJson {
   reason?: string;
   health?: {
     ok: boolean;
-    counts: { ok: number; fail: number; skip: number };
+    counts: { ok: number; degraded?: number; fail: number; skip: number };
     results: ProbeResult[];
   };
   diagnostics?: { url: string; htmlBytes: number; screenshotPath?: string } | null;
@@ -277,6 +359,7 @@ function triage(): void {
     console.log('[auto-heal triage] no artifact found — download step should have provided one');
     ghOutput('action', 'skip');
     ghOutput('reason', 'no-artifact');
+    ghOutput('blind', 'false');
     process.exit(1);
   }
   const { data, date } = artifact;
@@ -286,6 +369,7 @@ function triage(): void {
     console.log('[auto-heal triage] artifact reason=cdp-unreachable — infra failure, skipping');
     ghOutput('action', 'skip');
     ghOutput('reason', 'cdp-unreachable');
+    ghOutput('blind', 'false');
     return;
   }
 
@@ -293,6 +377,7 @@ function triage(): void {
     console.log('[auto-heal triage] artifact has no health.results — malformed');
     ghOutput('action', 'skip');
     ghOutput('reason', 'no-results');
+    ghOutput('blind', 'false');
     process.exit(1);
   }
 
@@ -313,8 +398,36 @@ function triage(): void {
     console.log(`[auto-heal triage] no anchors at streak >= ${STREAK_THRESHOLD}`);
     ghOutput('action', 'skip');
     ghOutput('reason', 'below-threshold');
+    ghOutput('blind', 'false');
     return;
   }
+
+  // Classify BEFORE any early return. The wholesale-redesign branch below used
+  // to bail first, so a wholesale regression in which nothing was patchable
+  // emitted reason=wholesale-redesign and never reported blindness — leaving the
+  // workflow green in the worst case (many anchors down, auto-heal powerless).
+  const byId = new Map<string, ProbeResult>();
+  for (const r of data.health.results) {
+    if (!byId.has(r.id)) byId.set(r.id, r);
+  }
+
+  // Sort candidates by priority bucket
+  const sorted = [...candidates].sort((a, b) => {
+    const ca = byId.get(a)?.category ?? 'pattern';
+    const cb = byId.get(b)?.category ?? 'pattern';
+    return PRIORITY.indexOf(ca) - PRIORITY.indexOf(cb);
+  });
+
+  const anchorsSource = fs.readFileSync(ANCHORS_PATH, 'utf8');
+
+  const classified = classifyCandidates(sorted, {
+    canPatch: (id) => canPatch(anchorsSource, id),
+    inCooldown: isWithinCooldown,
+    // Shape gate: anchor-id flows into a shell-interpolated workflow command,
+    // so a future code path adding streak keys from a non-anchor source must
+    // not be able to inject here.
+    isValidId: isValidAnchorId
+  });
 
   if (candidates.length >= WHOLESALE_THRESHOLD) {
     console.log(`[auto-heal triage] ${candidates.length} anchors regressed — wholesale-redesign suspected`);
@@ -348,51 +461,77 @@ function triage(): void {
     }
     ghOutput('action', 'skip');
     ghOutput('reason', 'wholesale-redesign');
+    // A wholesale regression can ALSO be structurally blind; the two are
+    // independent facts, so blindness gets its own output rather than competing
+    // for the single `reason` slot.
+    ghOutput('blind', String(isStructurallyBlind(classified)));
+    if (isStructurallyBlind(classified)) {
+      console.log(`::error title=auto-heal is structurally blind::a wholesale regression is suspected AND none of the ${classified.unpatchable.length} failing anchors are auto-patchable: ${classified.unpatchable.join(', ')}`);
+    }
     ghOutput('candidate-count', String(candidates.length));
     return;
   }
 
   // Map id → category for priority sort
-  const byId = new Map<string, ProbeResult>();
-  for (const r of data.health.results) {
-    if (!byId.has(r.id)) byId.set(r.id, r);
+  for (const id of classified.unpatchable) {
+    console.log(`[auto-heal triage] ${id} — check shape not auto-patchable`);
+  }
+  for (const id of classified.cooling) {
+    console.log(`[auto-heal triage] ${id} — within ${COOLDOWN_DAYS}-day cooldown, skipping`);
+  }
+  for (const id of classified.invalid) {
+    console.log(`[auto-heal triage] ${id} — failed anchor-id shape validation, skipping`);
   }
 
-  // Sort candidates by priority bucket
-  const sorted = [...candidates].sort((a, b) => {
-    const ca = byId.get(a)?.category ?? 'pattern';
-    const cb = byId.get(b)?.category ?? 'pattern';
-    return PRIORITY.indexOf(ca) - PRIORITY.indexOf(cb);
-  });
-
-  const anchorsSource = fs.readFileSync(ANCHORS_PATH, 'utf8');
-
-  for (const id of sorted) {
-    if (!canPatch(anchorsSource, id)) {
-      console.log(`[auto-heal triage] ${id} — check shape not auto-patchable, skipping`);
-      continue;
-    }
-    if (isWithinCooldown(id)) {
-      console.log(`[auto-heal triage] ${id} — within ${COOLDOWN_DAYS}-day cooldown, skipping`);
-      continue;
-    }
-    if (!isValidAnchorId(id)) {
-      // Should never happen for source-defined UI_ANCHORS, but the shape
-      // gate exists because anchor-id flows into a shell-interpolated
-      // workflow command. A future code path that adds streak keys from
-      // a non-anchor source must not be able to inject here.
-      console.log(`[auto-heal triage] ${id} — failed anchor-id shape validation, skipping`);
-      continue;
-    }
-    console.log(`[auto-heal triage] selected ${id} (streak=${streak[id]}, category=${byId.get(id)?.category ?? 'unknown'})`);
+  const selected = classified.eligible[0];
+  if (selected) {
+    console.log(`[auto-heal triage] selected ${selected} (streak=${streak[selected]}, category=${byId.get(selected)?.category ?? 'unknown'})`);
     ghOutput('action', 'heal');
-    ghOutput('anchor-id', id);
+    ghOutput('anchor-id', selected);
+    ghOutput('blind', 'false');
     return;
   }
 
-  console.log('[auto-heal triage] all candidates either complex or in cooldown — skipping');
+  // Nothing healable. Distinguish "wait for the cooldown" from "auto-heal
+  // physically cannot fix this, ever" — the second one is a standing defect in
+  // this tool and needs a human, not another quiet day.
+  if (isStructurallyBlind(classified)) {
+    const ids = classified.unpatchable.join(', ');
+    console.log(
+      `::error title=auto-heal is structurally blind::${classified.unpatchable.length} anchor(s) have failed for ${STREAK_THRESHOLD}+ runs and NONE are auto-patchable: ${ids}. auto-heal cannot fix these — a human must.`
+    );
+    const driftPr = findDriftPrNumber(date);
+    if (driftPr != null && !prHasLabel(driftPr, 'auto-heal-blind')) {
+      gh([
+        'pr',
+        'comment',
+        String(driftPr),
+        '--body',
+        [
+          '## Auto-heal cannot fix this',
+          '',
+          `These anchors have failed for ${STREAK_THRESHOLD}+ consecutive runs, but **none of them are auto-patchable**, so auto-heal has taken no action and will not take any on future runs either:`,
+          '',
+          ...classified.unpatchable.map((id) => `- \`${id}\` (streak=${streak[id]})`),
+          '',
+          'The AST patcher can only rewrite anchors shaped `hasSelector(b, \'<string literal>\')`. Anchors that read their selector from `selectors.json` (`SEL.group.key`) are outside its reach, as are `hasButtonMatching` / custom-walker checks.',
+          '',
+          '**This will not resolve on its own.** Repair the selector by hand, or extend the patcher.'
+        ].join('\n')
+      ]);
+      gh(['pr', 'edit', String(driftPr), '--add-label', 'auto-heal-blind']);
+    }
+    ghOutput('action', 'skip');
+    ghOutput('reason', 'blind-unpatchable');
+    ghOutput('blind', 'true');
+    ghOutput('blind-anchors', classified.unpatchable.join(','));
+    return;
+  }
+
+  console.log('[auto-heal triage] all candidates in cooldown — skipping');
   ghOutput('action', 'skip');
   ghOutput('reason', 'no-eligible-candidate');
+  ghOutput('blind', 'false');
 }
 
 // ---- heal ----
@@ -774,7 +913,10 @@ async function heal(anchorId: string): Promise<void> {
     ghOutput('reason', 're-probe-anchor-missing');
     return;
   }
-  const nonOk = entriesForAnchor.filter((r) => r.status !== 'ok');
+  // `degraded` means the anchor WORKS (via a superseded branch) — the patch did
+  // its job. Treating anything !== 'ok' as failure reverted a working patch and
+  // then reported the heal as unsuccessful.
+  const nonOk = entriesForAnchor.filter((r) => isFailing(r.status));
   if (nonOk.length > 0) {
     console.log(
       `[auto-heal heal] re-probe shows ${anchorId} still failing in ${nonOk.length}/${entriesForAnchor.length} phase(s) — reverting`
@@ -903,7 +1045,17 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: Error) => {
+// Only run when executed as a script. Importing this module (unit tests reaching
+// for classifyCandidates) must not trigger a heal run — it shells out to git/gh
+// and calls the Anthropic API.
+// realpath BOTH sides: import.meta.url is already resolved through symlinks, so
+// comparing it to a raw argv[1] makes the guard silently false under a symlinked
+// checkout (or an npm-linked bin) — the script would then be imported-but-never-run.
+// Latent today (both workflows invoke by relative path), cheap to make robust.
+const entry = process.argv[1] ? fs.realpathSync(process.argv[1]) : '';
+const invokedDirectly = entry !== '' && fs.realpathSync(fileURLToPath(import.meta.url)) === entry;
+if (invokedDirectly)
+  main().catch((e: Error) => {
   // An uncaught exception is a programmer error (bad artifact shape, missing
   // tool, SDK contract drift). Exit 1 so the workflow goes red — masking it
   // as exit 0 would put it in the same silent-no-op class the expected-skip

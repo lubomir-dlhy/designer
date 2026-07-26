@@ -4,7 +4,7 @@ import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from '
 import { isCdpEnabled } from './cdp-env.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
-import { getSelectors } from './selectors.ts';
+import { getSelectors, orderedBranches } from './selectors.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -18,7 +18,45 @@ const SEL = getSelectors();
 
 export type AnchorCategory = 'home' | 'session' | 'share' | 'pattern';
 export type AnchorState = 'home' | 'session' | 'any';
-export type ProbeStatus = 'ok' | 'fail' | 'skip';
+// `degraded` = the canonical selector is GONE but a superseded legacy branch
+// still matches. The tool keeps working, so this is not a `fail` (it must not
+// open drift PRs or go red), but it is emphatically not `ok` either — before
+// this existed the legacy branch was packed into the same comma-OR selector and
+// simply kept the anchor green, hiding the canonical rot from the daily probe.
+export type ProbeStatus = 'ok' | 'degraded' | 'fail' | 'skip';
+
+/**
+ * Typed predicates over ProbeStatus, exported so every consumer classifies the
+ * same way. Written as exhaustive switches: adding a status value makes these a
+ * COMPILE error instead of a silent misclassification somewhere downstream.
+ *
+ * Widening the union to include `degraded` without making its consumers total is
+ * how two separate decision points went wrong — a verdict that ignored it, and a
+ * re-probe that reverted a working patch because the anchor was not literally
+ * 'ok'.
+ */
+export function isFailing(s: ProbeStatus): boolean {
+  switch (s) {
+    case 'fail':
+      return true;
+    case 'ok':
+    case 'degraded':
+    case 'skip':
+      return false;
+  }
+}
+
+/** True when the anchor is working — including via a superseded selector. */
+export function isWorking(s: ProbeStatus): boolean {
+  switch (s) {
+    case 'ok':
+    case 'degraded':
+      return true;
+    case 'fail':
+    case 'skip':
+      return false;
+  }
+}
 export type ProbePhase = 'home' | 'session';
 
 export interface ProbeResult {
@@ -47,6 +85,32 @@ async function hasSelector(browser: Browser, sel: string): Promise<boolean> {
   return !!(await browser
     .evalValue<boolean>(`!!document.querySelector(${JSON.stringify(sel)})`)
     .catch(() => false));
+}
+
+/**
+ * Probe a canonical selector, falling back to a superseded one ONLY to
+ * distinguish "still works via the old shape" from "gone entirely".
+ *
+ * Ordered on purpose: packing both into one `querySelector('A, B')` would return
+ * whichever comes first in document order — not the canonical match — and would
+ * report plain `ok` either way, which is exactly how legacy branches masked
+ * canonical rot from the daily probe.
+ */
+async function checkWithLegacy(
+  browser: Browser,
+  canonical: string,
+  legacy: string | null | undefined,
+  label: string
+): Promise<{ ok: boolean; status?: ProbeStatus; detail?: string }> {
+  if (await hasSelector(browser, canonical)) return { ok: true };
+  if (legacy && (await hasSelector(browser, legacy))) {
+    return {
+      ok: true,
+      status: 'degraded',
+      detail: `canonical ${label} selector (${canonical}) is GONE; still matching the superseded branch (${legacy}). Re-capture the canonical selector — the tool works today but this is unrepaired drift.`
+    };
+  }
+  return { ok: false, detail: `neither canonical (${canonical}) nor legacy (${legacy ?? 'none'}) matched` };
 }
 
 // True on a `.dc.html` DESIGN-CANVAS session (a Figma-like editor — dc-tool-*,
@@ -89,6 +153,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Ordered canonical-then-legacy branches for the composer send button, embedded
+// into the in-page snippets below. Splitting composer.sendButton into
+// canonical + composerLegacy made the canonical selector alone insufficient here:
+// ui-anchors itself records that data-testid="chat-send-button" was dropped in
+// the 2026-06 build, so a raw canonical lookup finds nothing on the live UI.
+// Resolved in order rather than comma-joined, so a stale duplicate earlier in
+// the document cannot win the click.
+const SEND_BRANCHES_JSON = JSON.stringify(orderedBranches(SEL.composer.sendButton, SEL.composerLegacy?.sendButton));
+
 async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; detail?: string }> {
   const prompt =
     'Health check: answer in chat only with the single word ok. Do not create, modify, or delete files.';
@@ -128,7 +201,8 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
     const disabled = await browser
       .evalValue<boolean>(
         `(() => {
-          const b = document.querySelector(${JSON.stringify(SEL.composer.sendButton)});
+          let b = null;
+          for (const s of ${SEND_BRANCHES_JSON}) { b = document.querySelector(s); if (b) break; }
           return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
         })()`
       )
@@ -140,7 +214,8 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
   const clicked = await browser
     .evalValue<boolean>(
       `(() => {
-        const b = document.querySelector(${JSON.stringify(SEL.composer.sendButton)});
+        let b = null;
+        for (const s of ${SEND_BRANCHES_JSON}) { b = document.querySelector(s); if (b) break; }
         if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
         b.click();
         return true;
@@ -217,8 +292,20 @@ export const UI_ANCHORS: AnchorDef[] = [
       // this signed-in check (the #16/#32 false-positive this anchor guards). Its
       // absence means the login wall is served at the /design URL — fail loudly.
       if (/claude\.ai\/design/.test(url)) {
-        const signedIn = await hasSelector(b, SEL.login.signedInIndicator ?? '');
-        if (signedIn) return { ok: true };
+        if (await hasSelector(b, SEL.login.signedInIndicator ?? '')) return { ok: true };
+        // Legacy arm: `button[title="Create"]` used to be packed into the same
+        // comma-OR as the composer testids. It is weaker evidence of auth than a
+        // composer (an action button could plausibly render on an unauthenticated
+        // shell), so it no longer counts as a clean pass — but it still beats
+        // sending the user to re-login. Keep it, mark it degraded.
+        const legacyMarker = SEL.loginLegacy?.signedInIndicator;
+        if (legacyMarker && (await hasSelector(b, legacyMarker))) {
+          return {
+            ok: true,
+            status: 'degraded',
+            detail: `signed-in marker matched only the superseded branch (${legacyMarker}); canonical composer testids absent. This branch is WEAK evidence of authentication (an action button could plausibly render on an unauthenticated shell), so treat sign-in as unconfirmed: re-capture login.signedInIndicator first, and only if the composer is genuinely absent while signed in does \`designer setup\` apply.`
+          };
+        }
         // The signed-in marker is absent. Before reporting "signed out" (which
         // sends the user to re-login), check for an unambiguous signed-in-home
         // landmark the login wall never renders — a project link or the home
@@ -288,23 +375,35 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'home.createButton',
     category: 'home',
-    description: 'creation submit button ([data-testid="home-composer-send"] / button[title="Create"])',
+    description: 'creation submit button ([data-testid="home-composer-send"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.createButton) })
+    check: async (b) => checkWithLegacy(b, SEL.home.createButton, SEL.homeLegacy?.createButton, 'home.createButton')
   },
   {
     id: 'home.projectsList',
     category: 'home',
     description: 'project list ([data-testid="projects-list"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectsList) })
+    check: async (b) => checkWithLegacy(b, SEL.home.projectsList, SEL.homeLegacy?.projectsList, 'home.projectsList')
+  },
+  {
+    id: 'home.projectLink',
+    category: 'home',
+    // The selector `listProjects()` actually scrapes. It had NO anchor: the
+    // probe read green off projectsList/projectCard while `designer list` could
+    // return []. `home.projectCard` carries the link only as a LEGACY branch,
+    // which checkWithLegacy never evaluates while the canonical row matches — so
+    // it could not stand in for this.
+    description: 'per-project link (a[href*="/design/p/"]) — the listProjects scrape target',
+    requires: 'home',
+    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectLink) })
   },
   {
     id: 'home.projectCard',
     category: 'home',
     description: 'project row ([data-testid="project-row"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectCard) })
+    check: async (b) => checkWithLegacy(b, SEL.home.projectCard, SEL.homeLegacy?.projectCard, 'home.projectCard')
   },
 
   // --- inside a session (after /design/p/{uuid}) ---
@@ -368,8 +467,11 @@ export const UI_ANCHORS: AnchorDef[] = [
     description: 'send button',
     requires: 'session',
     // The 2026-06 build dropped data-testid="chat-send-button"; the button is
-    // now only identifiable by its title="Send (Enter)". Match either.
-    check: async (b) => ({ ok: await hasSelector(b, SEL.composer.sendButton) })
+    // now only identifiable by its title="Send (Enter)". These were packed into
+    // ONE comma-OR selector, so this anchor reported a clean `ok` while matching
+    // only the superseded branch — the exact masking `degraded` exists to
+    // surface, sitting live in the repo that introduced it.
+    check: async (b) => checkWithLegacy(b, SEL.composer.sendButton, SEL.composerLegacy?.sendButton, 'composer.sendButton')
   },
   {
     id: 'session.htmlViewerIframe',
