@@ -233,3 +233,19 @@ jobs:
         run: |
           echo "::error title=Health probe did not fully run::verdict=incomplete — the UI anchors may be green but the tooling half of the probe is broken. This is not selector drift; see the doctor block in artifact health-${{ github.run_id }}."
           exit 1
+
+      # Backstop: the probe emitted no recognizable verdict at all. Every exit
+      # path inside ci-health routes through exitWith(), so this should be
+      # unreachable — but a hard kill (OOM, runner timeout, SIGKILL) terminates
+      # the process before any output is written, and `continue-on-error: true`
+      # means an unset verdict would otherwise leave every gate above false and
+      # the job green. Fails closed on anything that is not one of the three
+      # known verdicts.
+      - name: Fail when the probe emitted no verdict
+        if: >-
+          steps.probe.outputs.verdict != 'ok' &&
+          steps.probe.outputs.verdict != 'drift' &&
+          steps.probe.outputs.verdict != 'incomplete'
+        run: |
+          echo "::error title=Health probe emitted no verdict::verdict='${{ steps.probe.outputs.verdict }}' (step outcome: ${{ steps.probe.outcome }}). The probe died before publishing a result — treat as a broken probe, not a green run."
+          exit 1

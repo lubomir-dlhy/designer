@@ -144,6 +144,22 @@ function ghOutput(key: string, value: string): void {
   fs.appendFileSync(target, `${key}=${value}\n`);
 }
 
+/**
+ * The ONLY way this script may terminate. Every exit publishes a verdict first.
+ *
+ * The workflow gates on `verdict`, so an exit path that skips it leaves the
+ * output unset — and with `continue-on-error: true` on the probe step, all three
+ * gates then evaluate false and the job finishes GREEN. Routing every exit
+ * through here is what keeps "the probe died early" from reading as "the probe
+ * passed". `code` defaults to the verdict's canonical exit code; the throw path
+ * overrides it to keep 3 distinguishable in logs.
+ */
+function exitWith(verdict: ProbeVerdict, code: number = EXIT_CODE[verdict]): never {
+  ghOutput('verdict', verdict);
+  console.log(`[ci-health] verdict=${verdict}`);
+  process.exit(code);
+}
+
 function scrubArtifact(s: string): string {
   if (!s) return s;
   return s
@@ -383,7 +399,11 @@ async function main(): Promise<void> {
     ensureDir(outDir);
     fs.writeFileSync(path.join(outDir, artifactName), JSON.stringify(payload, null, 2));
     console.error(`[ci-health] FAIL — CDP unreachable on :${CDP_PORT} (${cdp.detail}); restart attempted=${cdp.attemptedRestart}`);
-    process.exit(2);
+    // `incomplete`, not `drift`: Chrome being unreachable is an environment
+    // fault and must never be filed as a claude.ai redesign — the same stance
+    // the workflow's preflight step already takes. Previously this exited 2,
+    // which opened a selectors-drift PR for a dead browser.
+    exitWith('incomplete');
   }
   console.log(`[ci-health] CDP alive — ${cdp.detail}${cdp.attemptedRestart ? ' (restarted)' : ''}`);
 
@@ -535,9 +555,7 @@ async function main(): Promise<void> {
   });
   // The workflow gates on this, not on the raw step outcome — `outcome` only has
   // success/failure, which cannot separate "UI drifted" from "probe broke".
-  ghOutput('verdict', verdict);
-  console.log(`[ci-health] verdict=${verdict}`);
-  if (verdict !== 'ok') process.exit(EXIT_CODE[verdict]);
+  exitWith(verdict);
 }
 
 // Only orchestrate when executed as a script. Without this guard, merely
@@ -549,6 +567,10 @@ const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(pro
 if (invokedDirectly) {
   main().catch((e: Error) => {
     console.error(`[ci-health] threw: ${e.message}`);
-    process.exit(3);
+    // An exception means the probe did not finish, so the workflow must see
+    // `incomplete` rather than an unset verdict (which would gate to green).
+    // Exit code stays 3 so "threw" remains distinguishable from a clean
+    // incomplete verdict in the logs.
+    exitWith('incomplete', 3);
   });
 }

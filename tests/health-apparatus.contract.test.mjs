@@ -299,8 +299,71 @@ test('the workflow gates on the verdict, never on the raw step outcome', () => {
   // probe — and the probe step runs with continue-on-error, so a bare outcome
   // check let an incomplete run pass as green.
   const wf = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/daily-health.yml'), 'utf8');
-  assert.doesNotMatch(wf, /steps\.probe\.outcome/, 'a gate still keys on step outcome instead of the verdict');
   for (const v of ['ok', 'drift', 'incomplete']) {
     assert.ok(wf.includes(`steps.probe.outputs.verdict == '${v}'`), `no workflow step handles verdict '${v}'`);
   }
+  // Scoped to `if:` CONDITIONS, not the whole file — naming `outcome` inside a
+  // diagnostic message is fine; gating on it is what cannot happen, because
+  // outcome collapses drift and a broken probe into one `failure`.
+  const lines = wf.split('\n');
+  const conditions = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(\s*)if:(.*)$/);
+    if (!m) continue;
+    let cond = m[2];
+    const indent = m[1].length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j];
+      if (!next.trim()) break;
+      const nextIndent = next.length - next.trimStart().length;
+      if (nextIndent <= indent) break;
+      cond += ' ' + next.trim();
+    }
+    conditions.push(cond);
+  }
+  assert.ok(conditions.length >= 3, 'expected at least the three verdict gates');
+  for (const c of conditions) {
+    assert.ok(!c.includes('steps.probe.outcome'), `a gate still keys on step outcome: ${c.trim().slice(0, 80)}`);
+  }
+});
+
+// --- PR #131 review round 4: no exit path may skip the verdict ---
+
+test('every process exit in ci-health goes through exitWith', () => {
+  // The regression this closes: the CDP-unreachable path and the main().catch
+  // handler exited without publishing a verdict. With `continue-on-error: true`
+  // on the probe step, an unset verdict left all gates false and the job GREEN —
+  // strictly worse than before, when a bare non-zero exit at least went red.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/ci-health.ts'), 'utf8');
+  const bare = src
+    .split('\n')
+    .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+    .filter(({ line }) => line.includes('process.exit('))
+    // The single legitimate call is the one inside exitWith itself.
+    .filter(({ n }) => {
+      const fnStart = src.slice(0, src.indexOf('function exitWith')).split('\n').length;
+      return !(n >= fnStart && n <= fnStart + 8);
+    });
+  assert.deepEqual(bare, [], `these exits bypass exitWith and would publish no verdict: ${JSON.stringify(bare)}`);
+});
+
+test('the workflow fails closed on an unrecognized or missing verdict', () => {
+  const wf = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/daily-health.yml'), 'utf8');
+  // A hard kill (OOM / runner timeout) writes no output at all, so the guard
+  // cannot live in the script — the workflow must reject anything unknown.
+  for (const v of ['ok', 'drift', 'incomplete']) {
+    assert.ok(wf.includes(`steps.probe.outputs.verdict != '${v}'`), `backstop does not exclude the known verdict '${v}'`);
+  }
+});
+
+test('CDP-unreachable is incomplete, never drift', () => {
+  // A dead browser is an environment fault. It used to exit 2, which opened a
+  // selectors-drift PR blaming claude.ai for a Chrome that would not start.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/ci-health.ts'), 'utf8');
+  // Anchored on the FAIL log specifically — an earlier line logs the benign
+  // "attempting relaunch" case with nearly the same wording.
+  const at = src.indexOf('FAIL — CDP unreachable on');
+  assert.notEqual(at, -1, 'CDP-unreachable failure log not found — update this test');
+  const cdpBlock = src.slice(at, at + 600);
+  assert.match(cdpBlock, /exitWith\('incomplete'\)/, 'CDP-unreachable must resolve to incomplete');
 });
