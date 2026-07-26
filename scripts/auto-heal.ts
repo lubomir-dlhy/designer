@@ -19,6 +19,12 @@
 //
 // All failure modes exit 0 — auto-heal is best-effort. The drift PR opened
 // by daily-health stays as the human-readable diagnostic regardless.
+//
+// ONE carve-out: `reason=blind-unpatchable` (nothing auto-patchable while
+// anchors are failing) still exits 0 here, but the workflow gates on that reason
+// and fails the job. That state is not a best-effort miss — it is a standing
+// defect in auto-heal that no future run resolves, and an ::error annotation
+// alone does not change a step's outcome.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,6 +35,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import { REPO_ROOT } from '../repo-root.ts';
 import { createBrowser } from '../browser.ts';
 import { canPatch, findAnchor, patchSelector } from './anchor-patcher.ts';
+import { getSelectors } from '../selectors.ts';
+
+const SEL = getSelectors();
 
 /**
  * Split triage candidates by WHY each one can or cannot be healed.
@@ -104,8 +113,14 @@ const ANTHROPIC_MODEL = 'claude-opus-4-7';
 // Navigation targets for the fresh snapshot auto-heal captures on the runner
 // (daily-health no longer uploads page.html/page.png — see captureCurrentSnapshot).
 const HOME_URL = 'https://claude.ai/design';
-const HOME_READY_SEL = '[data-testid="project-creator"]';
-const SESSION_READY_SEL = '[data-testid="chat-composer-input"]';
+// Second stale copy of the readiness gates (ci-health.ts had the other). The
+// home one was `[data-testid="project-creator"]`, dead since a redesign, so the
+// snapshot auto-heal feeds to the LLM was captured after a full timeout with no
+// readiness guarantee — i.e. possibly of a half-painted page, which is a bad
+// basis for inferring a replacement selector. Sourced from selectors.json so a
+// drift repair fixes every consumer at once.
+const HOME_READY_SEL = SEL.home.creator;
+const SESSION_READY_SEL = SEL.composer.promptTextarea;
 const HTML_CAP_BYTES = 60_000;
 
 // Priority: session anchors regressing breaks the canary loop hardest, so
@@ -124,7 +139,10 @@ interface ProbeResult {
   category: 'home' | 'session' | 'share' | 'pattern';
   description: string;
   requires: 'home' | 'session' | 'any';
-  status: 'ok' | 'fail' | 'skip';
+  // Mirrors ProbeStatus in ui-anchors.ts. `degraded` (working only via a
+  // superseded selector branch) is deliberately NOT treated as a fail below —
+  // but the type must admit it, or reading a current artifact is a lie.
+  status: 'ok' | 'degraded' | 'fail' | 'skip';
   detail?: string;
   phase?: 'home' | 'session';
 }
@@ -134,7 +152,7 @@ interface ArtifactJson {
   reason?: string;
   health?: {
     ok: boolean;
-    counts: { ok: number; fail: number; skip: number };
+    counts: { ok: number; degraded?: number; fail: number; skip: number };
     results: ProbeResult[];
   };
   diagnostics?: { url: string; htmlBytes: number; screenshotPath?: string } | null;

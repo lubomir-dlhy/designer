@@ -367,3 +367,38 @@ test('CDP-unreachable is incomplete, never drift', () => {
   const cdpBlock = src.slice(at, at + 600);
   assert.match(cdpBlock, /exitWith\('incomplete'\)/, 'CDP-unreachable must resolve to incomplete');
 });
+
+test('the auto-heal workflow fails the job when triage reports structural blindness', () => {
+  // ::error is an annotation; it does not change a step's outcome. Without an
+  // explicit gate the workflow still concluded success in exactly the
+  // blind-while-anchors-fail scenario this PR exists to surface.
+  const wf = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/auto-heal.yml'), 'utf8');
+  assert.ok(
+    wf.includes("steps.triage.outputs.reason == 'blind-unpatchable'"),
+    'no workflow gate on the blind-unpatchable reason — auto-heal would stay green while blind'
+  );
+  const gateIdx = wf.indexOf("steps.triage.outputs.reason == 'blind-unpatchable'");
+  assert.match(wf.slice(gateIdx, gateIdx + 500), /exit 1/, 'the blind gate must actually fail the job');
+});
+
+test('the blind reason string is emitted by triage exactly as the workflow expects', () => {
+  // Guards the two halves drifting apart: a renamed reason would silently make
+  // the gate dead, restoring the green-while-blind behaviour.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/auto-heal.ts'), 'utf8');
+  assert.match(src, /ghOutput\('reason', 'blind-unpatchable'\)/, 'triage no longer emits the reason the workflow gates on');
+});
+
+test('no health-apparatus script keeps its own hardcoded readiness selector', () => {
+  // There were two stale copies of these gates — ci-health.ts and auto-heal.ts —
+  // and the home one pointed at `project-creator`, dead since a redesign. Both
+  // burned the full timeout waiting for an element that could never appear and
+  // then proceeded with no readiness guarantee.
+  for (const f of ['scripts/ci-health.ts', 'scripts/auto-heal.ts']) {
+    const src = fs.readFileSync(path.join(REPO_ROOT, f), 'utf8');
+    const decls = src.match(/^const (?:HOME|SESSION)_READY_SEL = .*$/gm) || [];
+    assert.ok(decls.length > 0, `${f}: readiness selectors not found — update this test`);
+    for (const d of decls) {
+      assert.ok(/= SEL\./.test(d), `${f} hardcodes a readiness selector instead of reading selectors.json: ${d}`);
+    }
+  }
+});

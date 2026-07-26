@@ -179,3 +179,17 @@ jobs:
             new selector matches the intended element before merging — auto-
             heal validates that the *anchor probes green*, not that the
             selector targets the *right* DOM node.
+
+      # Structural blindness is not a best-effort miss — it is a standing defect
+      # in auto-heal itself: anchors are failing and the patcher cannot express a
+      # fix for ANY of them, so no future run will resolve it either. The triage
+      # step emits an ::error annotation, but annotations do not change a step's
+      # outcome, so without this gate the workflow still concluded success in
+      # exactly the scenario this PR exists to stop reporting as green.
+      #
+      # Runs last so the label + drift-PR comment posted during triage land first.
+      - name: Fail when auto-heal is structurally blind
+        if: steps.triage.outputs.reason == 'blind-unpatchable'
+        run: |
+          echo "::error title=auto-heal cannot fix the failing anchors::${{ steps.triage.outputs.blind-anchors }} — these have failed for 2+ runs and none are auto-patchable. This will not resolve on its own; repair the selector by hand or extend the patcher."
+          exit 1
