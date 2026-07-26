@@ -22,9 +22,21 @@ import type { Selectors } from './selectors.ts';
 //      click lands on the very node the assertion just checked. Verify-here /
 //      click-there is the failure mode that deletes the wrong file.
 //
-// Synthetic `element.click()` silently no-ops on some of these menus (probe
-// finding), so nothing here clicks: expressions READ and STAMP, the facade's
-// trusted input (browser.hover / browser.click) does every actuation.
+// Actuation rule: expressions here READ and STAMP. The one exception is
+// `clickTriggerExpr`, a synthetic OPENER fallback for the popover — needed
+// because trusted clicks silently no-op on some page states. A synthetic click
+// is never used on a destructive control; those are stamped here and clicked by
+// the controller, which proves the resulting state change either way.
+
+/**
+ * The confirm dialog's filename echo, as ONE rule shared by the page
+ * expression and the Node-side matcher below. It is interpolated into the
+ * in-page source and compiled here, so the tests that assert the fail-closed
+ * behaviour bind the rule production actually runs. Two copies of this drifted
+ * once already (first-match-wins in the page vs exactly-one in Node), which is
+ * precisely the probe-green/production-silent split PR #77 warns about.
+ */
+export const CONFIRM_ECHO_RE_SRC = 'Delete\\s+"([^"]+)"';
 
 /** Attribute the stamping expressions write; the caller clicks the stamped node. */
 export const STAMP_ATTR = 'data-designer-target';
@@ -48,35 +60,17 @@ export interface SwitcherRow {
 }
 
 /**
- * READ the popover's state — it never clicks. The caller opens it with the
- * facade's trusted click.
+ * FALLBACK opener: a synthetic click on the popover trigger.
  *
- * Opening it synthetically (`trigger.click()`) *looks* like it works — the rows
- * render — but leaves this Radix stack in a state where the row menu's
- * `fixed inset-0` dismissal scrim stays mounted and interactive ABOVE the
- * later confirm dialog, so every click on that dialog (facade OR raw CDP)
- * lands on the scrim and the delete silently never happens. A trusted open
- * does not. Cost us a live e2e cycle on 2026-07-26; the rule is now simply
- * "trusted input for every actuation in this flow, including the open".
+ * The preferred path is the facade's trusted click, but on some page states
+ * that reports success and does nothing at all (live 2026-07-26: selector
+ * click, hover-then-click and coordinate click all no-oped while this opened
+ * the popover immediately). React delegates handlers from the document root,
+ * which is why the synthetic path still lands.
  *
- * Never a blind toggle either: a click issued while the popover is already open
- * would CLOSE it, and during a settle poll an empty list reads as "the file is
- * gone" (the file-panel.ts PR #77 lesson).
- */
-/**
- * FALLBACK opener: a synthetic click on the trigger.
- *
- * Preferred path is the facade's trusted click, but on some page states that
- * reports success and does nothing at all (live 2026-07-26: three trusted
- * variants — selector click, hover-then-click, coordinate click — all no-oped
- * while this opened the popover immediately). React attaches the handler via
- * root delegation, which is why the synthetic path still works.
- *
- * The cost of opening this way is that the popover's `fixed inset-0` dismissal
- * scrim can outlive the row menu and cover the confirm dialog — which the
- * delete flow already handles by dismissing the popover before confirming
- * (scrimDismissPointExpr). So this is a safe fallback, not a shortcut: never
- * use a synthetic click to ACTUATE a destructive control.
+ * Safe here precisely because opening a file list is not destructive. Never use
+ * a synthetic click to actuate a destructive control — those are stamped and
+ * clicked by the controller, which proves the state change afterwards.
  */
 export function clickTriggerExpr(f: Selectors['files']): string {
   return `(() => {
@@ -87,6 +81,17 @@ export function clickTriggerExpr(f: Selectors['files']): string {
   })()`;
 }
 
+/**
+ * READ the popover's state — 'open' | 'closed' | 'no-trigger'. It never clicks;
+ * the caller opens it (trusted click first, `clickTriggerExpr` as fallback).
+ *
+ * Two reasons the open is the caller's job. A blind toggle would CLOSE an
+ * already-open popover, and during a settle poll an empty list reads as "the
+ * file is gone" (the file-panel.ts PR #77 lesson). And how it was opened has
+ * consequences: a synthetic open can leave the row menu's `fixed inset-0`
+ * dismissal scrim mounted above the later confirm dialog, which the delete flow
+ * handles by dismissing the popover before confirming (scrimDismissPointExpr).
+ */
 export function switcherStateExpr(f: Selectors['files']): string {
   return `(() => {
     if (document.querySelectorAll(${JSON.stringify(f.switcherRow)}).length > 0) return 'open';
@@ -179,8 +184,13 @@ export function verifyConfirmDialogExpr(f: Selectors['files'], legacyDialog: str
     // Anchored capture — NOT a substring test. \`text.includes(fileName)\` is
     // satisfied by a dialog naming "old-index.html" when the caller asked for
     // "index.html", i.e. it fails OPEN in the one direction that destroys data.
-    const m = text.match(/Delete\\s+"([^"]+)"/);
-    const dialogFile = m ? m[1] : null;
+    //
+    // EXACTLY one quoted token or null, compiled from the SAME source string as
+    // parseConfirmDialog below, so the shipped rule and the tested rule cannot
+    // drift (they did once: first-match-wins here vs exactly-one there, which
+    // let this path authorize a delete the tests believed was refused).
+    const all = Array.from(text.matchAll(new RegExp(${JSON.stringify(CONFIRM_ECHO_RE_SRC)}, 'g')));
+    const dialogFile = all.length === 1 ? all[0][1] : null;
     const matched = dialogFile !== null && dialogFile === ${JSON.stringify(fileName)};
     const buttons = Array.from(dialog.querySelectorAll('button'));
     const byText = (t) => buttons.filter((b) => (b.textContent || '').trim() === t);
@@ -203,7 +213,12 @@ export function dialogPresentExpr(f: Selectors['files'], legacyDialog: string | 
 }
 
 /**
- * Is this element the thing a real click would actually hit?
+ * What would a real click at this element's centre actually hit?
+ *
+ * Returns a STATUS STRING — 'hittable' | 'absent' | 'zero-size' | 'no-hit' |
+ * 'covered:<what>' — never a boolean: every one of those values is truthy, so a
+ * predicate-shaped name would invite `if (await ...) click()`, which green-lights
+ * a destructive click in exactly the states this exists to detect.
  *
  * Radix-style dialogs animate in behind a `fixed inset-0` backdrop, so for a
  * few hundred ms the button exists and is "visible" while the overlay still
@@ -212,7 +227,7 @@ export function dialogPresentExpr(f: Selectors['files'], legacyDialog: string | 
  * target), so the flow must wait for hit-testability rather than for mere
  * presence — polling this is what makes the confirm click deterministic.
  */
-export function hitTestableExpr(sel: string): string {
+export function hitTestStatusExpr(sel: string): string {
   return `(() => {
     const el = document.querySelector(${JSON.stringify(sel)});
     if (!el) return 'absent';
@@ -299,17 +314,17 @@ export function normalizeLabel(s: string): string {
   return s.toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/** Indices of rows whose label matches the filename. 0 = not found, 2+ = ambiguous. */
-export function matchRows(rows: SwitcherRow[], filename: string): number[] {
+/** INDICES of rows whose label matches the filename. 0 = not found, 2+ = ambiguous. */
+export function matchingRowIndexes(rows: SwitcherRow[], filename: string): number[] {
   const want = normalizeLabel(displayLabelFor(filename));
-  const exact: number[] = [];
+  const indexes: number[] = [];
   rows.forEach((r, i) => {
     const label = normalizeLabel(r.label);
     // Accept the label with or without an extension chain — some views render
     // the full filename in the row.
-    if (label === want || normalizeLabel(displayLabelFor(r.label)) === want) exact.push(i);
+    if (label === want || normalizeLabel(displayLabelFor(r.label)) === want) indexes.push(i);
   });
-  return exact;
+  return indexes;
 }
 
 /**
@@ -317,7 +332,7 @@ export function matchRows(rows: SwitcherRow[], filename: string): number[] {
  * token; anything else is null (fail closed).
  */
 export function parseConfirmDialog(text: string): { dialogFile: string | null } {
-  const all = [...text.matchAll(/Delete\s+"([^"]+)"/g)];
+  const all = [...text.matchAll(new RegExp(CONFIRM_ECHO_RE_SRC, 'g'))];
   return { dialogFile: all.length === 1 ? (all[0]?.[1] ?? null) : null };
 }
 

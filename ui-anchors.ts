@@ -952,13 +952,24 @@ export const UI_ANCHORS: AnchorDef[] = [
     // to probe a dialog that can only be raised by a real deletion.
     check: async (b) => {
       const dialogSel = presenceSelector(SEL.files.confirmDialog, SEL.filesLegacy?.confirmDialog);
+      // A failed read is NOT "clean" — mapping it to false would let this
+      // anchor, whose whole job is proving cleanup, assert a page state it
+      // never actually read (the PR #77 shape).
       const dialogOpen = await b
         .evalValue<boolean>(dialogPresentExpr(SEL.files, SEL.filesLegacy?.confirmDialog))
-        .catch(() => false);
+        .catch(() => null);
+      if (dialogOpen === null) {
+        return { ok: true, status: 'skip', detail: 'could not read page state after the switcher probe — inconclusive' };
+      }
       if (dialogOpen) {
         return { ok: false, detail: `a confirm dialog is open (${dialogSel}) — the switcher probe left the page mid-flow` };
       }
-      const rows = await b.evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`).catch(() => 0);
+      const rows = await b
+        .evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`)
+        .catch(() => null);
+      if (rows === null) {
+        return { ok: true, status: 'skip', detail: 'could not read switcher state after the probe — inconclusive' };
+      }
       if (rows > 0) return { ok: true, status: 'degraded', detail: `switcher popover still open (${rows} rows) after probe cleanup` };
       return { ok: true, detail: 'no dialog, switcher closed' };
     }

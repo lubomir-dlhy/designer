@@ -159,7 +159,7 @@ async function main() {
   // --- dry run must be non-mutating ---
   await assertOwned('dry-run');
   const dry = await c.deleteFile(targetFile, { dryRun: true });
-  check(dry.ok === true && 'dryRun' in dry && dry.dryRun === true, 'dry run returns a preview', dry);
+  check(dry.ok === true && dry.dryRun === true, 'dry run returns a preview', dry);
   const afterDry = await rows();
   check(afterDry.length === afterAdd.length, 'dry run deleted NOTHING', { before: afterAdd.length, after: afterDry.length });
 
@@ -171,7 +171,7 @@ async function main() {
   await assertOwned('delete a file');
   const del = await c.deleteFile(targetFile, { snapshot: false }); // canvas pages have no served HTML to snapshot
   check(del.ok === true, 'delete succeeded', del);
-  if (del.ok && !('dryRun' in del)) {
+  if (del.ok && !del.dryRun) {
     check(
       del.remainingLabels.length === afterAdd.length - 1,
       'remainingLabels shrank by exactly one (positive settle held)',

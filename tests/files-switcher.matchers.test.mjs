@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   displayLabelFor,
   normalizeLabel,
-  matchRows,
+  matchingRowIndexes,
   parseConfirmDialog,
   dialogNamesFile,
   readRowsExpr,
@@ -13,6 +13,7 @@ import {
   stampMenuDeleteExpr,
   rowSelector,
   stampRowExpr,
+  CONFIRM_ECHO_RE_SRC,
 } from '../files-switcher.ts';
 import { getSelectors } from '../selectors.ts';
 
@@ -34,29 +35,29 @@ test('displayLabelFor keeps dots inside the stem', () => {
 // --- matchRows: resolution, ambiguity, and the prefix trap ---
 
 test('matchRows finds the one row for a unique label', () => {
-  assert.deepEqual(matchRows(rows('index', 'about'), 'index.html'), [0]);
+  assert.deepEqual(matchingRowIndexes(rows('index', 'about'), 'index.html'), [0]);
 });
 
 test('matchRows reports BOTH indices when two files share a label (ambiguous → refuse)', () => {
   // Canvas.dc.html and Canvas.html both display as "Canvas".
-  assert.deepEqual(matchRows(rows('Canvas', 'Canvas'), 'Canvas.html'), [0, 1]);
+  assert.deepEqual(matchingRowIndexes(rows('Canvas', 'Canvas'), 'Canvas.html'), [0, 1]);
 });
 
 test('matchRows does not cross-match a label that is a prefix of another', () => {
-  assert.deepEqual(matchRows(rows('index2'), 'index.html'), []);
-  assert.deepEqual(matchRows(rows('index'), 'index2.html'), []);
+  assert.deepEqual(matchingRowIndexes(rows('index2'), 'index.html'), []);
+  assert.deepEqual(matchingRowIndexes(rows('index'), 'index2.html'), []);
 });
 
 test('matchRows tolerates a humanized label (hyphens rendered as words)', () => {
-  assert.deepEqual(matchRows(rows('Delete Test'), 'delete-test.dc.html'), [0]);
+  assert.deepEqual(matchingRowIndexes(rows('Delete Test'), 'delete-test.dc.html'), [0]);
 });
 
 test('matchRows also matches a row that renders the full filename', () => {
-  assert.deepEqual(matchRows(rows('index.html'), 'index.html'), [0]);
+  assert.deepEqual(matchingRowIndexes(rows('index.html'), 'index.html'), [0]);
 });
 
 test('matchRows returns empty for a file that is not listed', () => {
-  assert.deepEqual(matchRows(rows('index', 'about'), 'missing.html'), []);
+  assert.deepEqual(matchingRowIndexes(rows('index', 'about'), 'missing.html'), []);
 });
 
 // --- parseConfirmDialog / dialogNamesFile: the deletion authority ---
@@ -131,11 +132,30 @@ test('verifyConfirmDialogExpr stamps cancel on mismatch and delete on match', ()
   const code = expr.replace(/\/\/.*$/gm, '');
   assert.ok(/dialogFile === /.test(code), 'echo check must compare with strict equality');
   assert.ok(!/includes\(/.test(code), 'must not use substring containment for the echo check');
-  assert.ok(/match\(\/Delete/.test(code), 'the dialog filename must be parsed with an anchored regex');
+  assert.ok(code.includes(JSON.stringify(CONFIRM_ECHO_RE_SRC)), 'the dialog filename must be parsed with the shared anchored rule');
 });
 
 test('stampMenuDeleteExpr scopes to an open role=menu and demands a single exact hit', () => {
   const expr = stampMenuDeleteExpr();
   assert.ok(expr.includes('[role="menu"]'), 'unscoped text search can reach "Delete project"');
   assert.ok(expr.includes('hits.length !== 1'), 'exactly one exact-text match is required');
+});
+
+// --- the shipped echo rule and the tested one are ONE rule ---
+
+test('the page expression uses the same echo rule as parseConfirmDialog', () => {
+  const expr = verifyConfirmDialogExpr(SEL.files, SEL.filesLegacy?.confirmDialog, 'index.html');
+  // Both sides compile CONFIRM_ECHO_RE_SRC. If someone inlines a second regex
+  // in the page expression, this fails — the two copies drifted once already
+  // (first-match-wins in the page vs exactly-one in Node), which let the page
+  // authorize a delete the tested matcher refuses.
+  assert.ok(expr.includes(JSON.stringify(CONFIRM_ECHO_RE_SRC)), 'page expression must interpolate the shared rule source');
+  assert.ok(!/\/Delete\\s\+/.test(expr), 'no second inlined echo regex in the page expression');
+  assert.ok(/all\.length === 1/.test(expr), 'page expression must require EXACTLY one quoted token');
+});
+
+test('the shared echo source drives the fail-closed two-token case', () => {
+  const re = new RegExp(CONFIRM_ECHO_RE_SRC, 'g');
+  assert.equal([...'Delete "a.html"? Delete "b.html"?'.matchAll(re)].length, 2, 'rule finds both tokens…');
+  assert.deepEqual(parseConfirmDialog('Delete "a.html"? Delete "b.html"?'), { dialogFile: null }, '…and the exactly-one rule refuses');
 });

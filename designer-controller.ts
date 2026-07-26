@@ -32,11 +32,11 @@ import {
   verifyConfirmDialogExpr,
   dialogPresentExpr,
   clearStampsExpr,
-  hitTestableExpr,
+  hitTestStatusExpr,
   centerOfExpr,
   scrimDismissPointExpr,
   stampedSelector,
-  matchRows,
+  matchingRowIndexes,
   displayLabelFor,
   STAMP_MENU_DELETE,
   STAMP_CONFIRM_DELETE,
@@ -68,6 +68,8 @@ export type DeleteFileError =
 export type DeleteFileResult =
   | {
       ok: true;
+      /** Discriminant: false = the file is GONE. A dry run never deletes. */
+      dryRun: false;
       file: string;
       deletedLabel: string;
       /** Switcher DISPLAY labels (no extensions) of what remains. */
@@ -75,7 +77,7 @@ export type DeleteFileResult =
       snapshotPath: string | null;
       activeFileReset: boolean;
     }
-  | { ok: true; dryRun: true; wouldDelete: string | null; ambiguous: boolean; rows: string[] }
+  | { ok: true; dryRun: true; file: string; wouldDelete: string | null; ambiguous: boolean; rows: string[] }
   | {
       ok: false;
       error: DeleteFileError;
@@ -1415,10 +1417,13 @@ export class DesignerController {
 
     // Capture the active file BEFORE mutating: the app may rewrite ?file= as a
     // side effect of the delete, so a post-hoc read reports the wrong file.
+    // Mirror openFile's reader exactly (designer-controller openFile: plain
+    // searchParams.get). URLSearchParams already percent-decodes and already
+    // maps '+' to space; a second decodeURIComponent on top corrupts names
+    // containing a literal '%' and makes the two readers disagree.
     const fileParamOf = (u: string): string | null => {
       try {
-        const raw = new URL(u).searchParams.get('file');
-        return raw === null ? null : decodeURIComponent(raw.replace(/\+/g, ' '));
+        return new URL(u).searchParams.get('file');
       } catch {
         return null;
       }
@@ -1486,7 +1491,7 @@ export class DesignerController {
     ): Promise<string | null> => {
       const sel = stampedSelector(stamp);
       const trusted = async (): Promise<void> => {
-        const hit = (await this.browser.evalValue<string>(hitTestableExpr(sel)).catch(() => 'error')) || 'error';
+        const hit = (await this.browser.evalValue<string>(hitTestStatusExpr(sel)).catch(() => 'error')) || 'error';
         if (hit === 'hittable') {
           await this.browser.click(sel).catch(() => null);
           return;
@@ -1499,7 +1504,7 @@ export class DesignerController {
         await this.browser.clickAt(pt.x, pt.y).catch(() => null);
         await sleep(600);
         if (revalidate && !(await revalidate())) return;
-        if ((await this.browser.evalValue<string>(hitTestableExpr(sel)).catch(() => 'error')) === 'hittable') {
+        if ((await this.browser.evalValue<string>(hitTestStatusExpr(sel)).catch(() => 'error')) === 'hittable') {
           await this.browser.click(sel).catch(() => null);
         }
       };
@@ -1536,7 +1541,7 @@ export class DesignerController {
       if (opened !== 'open') return { ok: false, error: 'switcher-unavailable' };
       const rows = await readRows();
       if (!rows) return { ok: false, error: 'switcher-unavailable' };
-      return { ok: true, rows, matches: matchRows(rows, fileName) };
+      return { ok: true, rows, matches: matchingRowIndexes(rows, fileName) };
     };
 
     // A confirm dialog left open by an earlier interrupted run blocks every
@@ -1570,7 +1575,7 @@ export class DesignerController {
     if (dryRun) {
       const rows = resolved.rows.map((r) => r.label);
       await closeSwitcher();
-      return { ok: true, dryRun: true, wouldDelete: rows[resolved.matches[0]!] ?? null, ambiguous: false, rows };
+      return { ok: true, dryRun: true, file: fileName, wouldDelete: rows[resolved.matches[0]!] ?? null, ambiguous: false, rows };
     }
 
     // --- SNAPSHOT (blocking precondition; there is no undo) ---
@@ -1655,19 +1660,37 @@ export class DesignerController {
       await sleep(400);
 
       // --- VERIFY-AND-STAMP THE DIALOG ---
+      // Dismiss whatever modal is up and PROVE it went away. Returning
+      // 'confirm-mismatch' asserts nothing was deleted; that claim is only
+      // honest if the dialog is actually gone.
+      const dismissAndProve = async (): Promise<boolean> => {
+        await this.browser.press('Escape').catch(() => null);
+        await sleep(500);
+        if (!(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true))) return true;
+        await this.browser.press('Escape').catch(() => null);
+        await sleep(500);
+        return !(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true));
+      };
+
       const verdict = await this.browser
         .evalValue<{ found: boolean; dialogFile: string | null; matched: boolean; stamped: string | null }>(
           verifyConfirmDialogExpr(F, legacyDialog, fileName)
         )
         .catch(() => null);
       if (!verdict?.found || verdict.stamped === null) {
-        await this.browser.press('Escape').catch(() => null);
+        // The buttons could not be identified (e.g. the product renamed them),
+        // so there is nothing safe to click — dismiss and prove it.
+        const dismissed = verdict?.found ? await dismissAndProve() : true;
         return {
           ok: false,
-          error: 'confirm-mismatch',
+          error: dismissed ? 'confirm-mismatch' : 'dialog-stuck',
           file: fileName,
           dialogFile: verdict?.dialogFile ?? null,
-          detail: verdict?.found ? 'confirm dialog button could not be identified' : 'confirm dialog did not appear',
+          detail: !verdict?.found
+            ? 'confirm dialog did not appear'
+            : dismissed
+              ? 'confirm dialog buttons could not be identified; dialog dismissed, nothing deleted'
+              : 'confirm dialog buttons could not be identified AND the dialog would not dismiss — check the tab by hand',
           snapshotPath
         };
       }
@@ -1678,11 +1701,7 @@ export class DesignerController {
         });
         await sleep(400);
         let stillOpen = await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true);
-        if (stillOpen) {
-          await this.browser.press('Escape').catch(() => null);
-          await sleep(400);
-          stillOpen = await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true);
-        }
+        if (stillOpen) stillOpen = !(await dismissAndProve());
         return {
           ok: false,
           error: stillOpen ? 'dialog-stuck' : 'confirm-mismatch',
@@ -1737,7 +1756,7 @@ export class DesignerController {
           consecutive = 0;
           continue;
         }
-        const stillThere = matchRows(rows, fileName).length;
+        const stillThere = matchingRowIndexes(rows, fileName).length;
         if (stillThere === preLabelCount) sawTargetPresent = true;
         if (rows.length === preCount - 1 && stillThere === preLabelCount - 1) {
           consecutive += 1;
@@ -1762,21 +1781,26 @@ export class DesignerController {
 
       // --- POST-SUCCESS ---
       let activeFileReset = false;
-      if (activeFileBefore !== null && activeFileBefore === fileName) {
+      // The snapshot step calls fetchFile → openFile, which navigates the tab to
+      // ?file=<fileName>. So the pre-flight sample is not enough: re-read the
+      // tab's file param as it stands now, or a snapshot-first delete leaves the
+      // stored session resuming onto a file that no longer exists.
+      const activeFileNow = fileParamOf(await this.currentUrl());
+      if (activeFileBefore === fileName || activeFileNow === fileName) {
         // The tab (and the STORED url) point at a file that no longer exists;
         // leaving designUrl as-is would resume every future session onto it.
         await this.openGuarded(targetRoot).catch(() => null);
         await this.browser.waitLoad('load').catch(() => null);
-        const strip = (u?: string | null) => (u ? u.split('?')[0] : u);
-        upsertSession(this.key, {
-          designUrl: strip(stored!.designUrl) as string,
-          lastUrl: strip(stored!.lastUrl) ?? undefined
-        } as Partial<StoredSession>);
+        // targetRoot is `string` (the !targetRoot throw above narrowed it) and is
+        // by construction stored.designUrl minus its query — no casts needed.
+        const strip = (u?: string | null): string | undefined => (u ? u.split('?')[0] : undefined);
+        upsertSession(this.key, { designUrl: targetRoot, lastUrl: strip(stored?.lastUrl) });
         activeFileReset = true;
       }
       appendHistory(this.key, { kind: 'file-delete', file: fileName, at: new Date().toISOString() });
       return {
         ok: true,
+        dryRun: false,
         file: fileName,
         deletedLabel: displayLabelFor(fileName),
         remainingLabels: lastGoodRows.map((r) => r.label),

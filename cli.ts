@@ -146,6 +146,17 @@ async function main(): Promise<void> {
       break;
     }
     case 'files': {
+      // `designer files delete x.html` is the shape a user extrapolates from
+      // `mcp serve`. Without this guard it fell through to the listing and
+      // exited 0 — a success-looking response to a destructive command.
+      if (flags._.length > 0) {
+        const sub = String(flags._[0]);
+        throw new Error(
+          sub === 'delete'
+            ? `Usage: designer files-delete "<name>.html" [--yes] --key k  (there is no 'files delete' subcommand)`
+            : `Unknown argument "${sub}" for 'files'. Usage: designer files [--key k]`
+        );
+      }
       const c = new DesignerController({ key });
       const detail = await c.listFilesDetailed();
       if (!detail.authoritative) {
@@ -175,7 +186,12 @@ async function main(): Promise<void> {
         );
         break;
       }
-      const r = await c.deleteFile(filename, { snapshot: flags.snapshot !== false });
+      // parseFlags only ever produces a string or the boolean `true`, so a bare
+      // `flags.snapshot !== false` is ALWAYS true and the documented opt-out was
+      // unreachable — which made canvas pages (no served HTML to snapshot)
+      // permanently undeletable from the CLI.
+      const snapshot = flags.snapshot === undefined ? true : flags.snapshot === true ? true : !/^(false|0|no)$/i.test(String(flags.snapshot));
+      const r = await c.deleteFile(filename, { snapshot });
       console.log(JSON.stringify(r, null, 2));
       if (!r.ok) process.exitCode = 1;
       break;
