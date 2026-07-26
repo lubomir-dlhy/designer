@@ -127,8 +127,18 @@ export function probeVerdict(input: { anchorFail: boolean; doctorSpawnError: str
   // Anchor drift wins: it is the signal the drift PR exists to carry, and it is
   // actionable even when the toolchain is also unhappy.
   if (input.anchorFail) return 'drift';
+  // ONLY a failure to launch means the probe did not run. A non-zero doctor exit
+  // deliberately does NOT gate.
+  //
+  // `designer doctor` exits 2 if ANY of its checks fails, several of which are
+  // orthogonal to whether this probe is valid — and one fires routinely: doctor
+  // runs BEFORE the probe navigates, and ensureCdp() may have just relaunched
+  // Chrome, so the "claude.ai/design tab" check (status 'fail') sees a browser
+  // with no design tab yet. Gating on the exit code would therefore fail the
+  // daily job on ordinary runs and permanently block `Close stale drift PRs on
+  // green`, turning a diagnostic into an outage. A non-zero exit is surfaced via
+  // the artifact + an ::error annotation instead; it is information, not a gate.
   if (input.doctorSpawnError !== null) return 'incomplete';
-  if (input.doctorExitCode !== 0) return 'incomplete';
   return 'ok';
 }
 

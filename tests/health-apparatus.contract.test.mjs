@@ -276,8 +276,16 @@ test('a doctor that never launched is incomplete, NOT green and NOT drift', () =
   assert.notEqual(v, 'drift');
 });
 
-test('a doctor that ran but reported a broken toolchain is incomplete', () => {
-  assert.equal(probeVerdict({ anchorFail: false, doctorSpawnError: null, doctorExitCode: 2 }), 'incomplete');
+test('a NON-ZERO doctor exit does not gate the workflow', () => {
+  // Deliberate. doctor exits 2 if any of its checks fails, and one fires on
+  // ordinary runs: doctor runs before the probe navigates, and ensureCdp() may
+  // have just relaunched Chrome, so the "claude.ai/design tab" check sees no
+  // design tab. Gating here would fail the daily job routinely and permanently
+  // block `Close stale drift PRs on green` — a diagnostic becoming an outage.
+  assert.equal(probeVerdict({ anchorFail: false, doctorSpawnError: null, doctorExitCode: 2 }), 'ok');
+  // A failure to LAUNCH is still incomplete — that is the case where the
+  // tooling half genuinely did not run.
+  assert.equal(probeVerdict({ anchorFail: false, doctorSpawnError: 'ENOENT: ...', doctorExitCode: -1 }), 'incomplete');
 });
 
 test('anchor drift outranks a broken doctor — the actionable signal wins', () => {
