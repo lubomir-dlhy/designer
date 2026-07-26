@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { resolveDoctorBin } from '../scripts/ci-health.ts';
+import { resolveDoctorBin, probeVerdict, EXIT_CODE } from '../scripts/ci-health.ts';
 import { findAnchor, canPatch } from '../scripts/anchor-patcher.ts';
 import { classifyCandidates, isStructurallyBlind, patchableAnchorIds } from '../scripts/auto-heal.ts';
 import { orderedBranches, presenceSelector } from '../selectors.ts';
@@ -253,4 +253,54 @@ test('every ProbeStatus is rendered distinctly by the CLI health reporter', () =
   const icons = cli.match(/const icon = \(s: string\) => \(([^;]+)\);/);
   assert.ok(icons, 'icon renderer not found — update this test');
   assert.match(icons[1], /'degraded'/, "degraded has no glyph of its own");
+});
+
+// --- PR #131 review round 3: the probe needs a third outcome ---
+
+test('a clean run with a working doctor is ok', () => {
+  assert.equal(probeVerdict({ anchorFail: false, doctorSpawnError: null, doctorExitCode: 0 }), 'ok');
+});
+
+test('anchor regressions are drift — the selectors-drift-PR path', () => {
+  assert.equal(probeVerdict({ anchorFail: true, doctorSpawnError: null, doctorExitCode: 0 }), 'drift');
+});
+
+test('a doctor that never launched is incomplete, NOT green and NOT drift', () => {
+  // The bug this closes: exit 0 made `Close stale drift PRs on green` fire while
+  // half the probe was broken, so a legitimate open drift PR could be
+  // auto-closed. Exit 2 would have been just as wrong — it would file a tooling
+  // fault as a claude.ai redesign.
+  const v = probeVerdict({ anchorFail: false, doctorSpawnError: 'ENOENT: ...', doctorExitCode: -1 });
+  assert.equal(v, 'incomplete');
+  assert.notEqual(v, 'ok');
+  assert.notEqual(v, 'drift');
+});
+
+test('a doctor that ran but reported a broken toolchain is incomplete', () => {
+  assert.equal(probeVerdict({ anchorFail: false, doctorSpawnError: null, doctorExitCode: 2 }), 'incomplete');
+});
+
+test('anchor drift outranks a broken doctor — the actionable signal wins', () => {
+  // Both broken: still file the drift PR. Drift is what a human can act on, and
+  // the doctor fault is recorded in the artifact either way.
+  assert.equal(probeVerdict({ anchorFail: true, doctorSpawnError: 'ENOENT: ...', doctorExitCode: -1 }), 'drift');
+});
+
+test('each verdict maps to a distinct exit code, and only ok is zero', () => {
+  assert.equal(EXIT_CODE.ok, 0);
+  assert.notEqual(EXIT_CODE.drift, 0);
+  assert.notEqual(EXIT_CODE.incomplete, 0);
+  assert.notEqual(EXIT_CODE.drift, EXIT_CODE.incomplete, 'drift and incomplete must be distinguishable');
+  assert.equal(new Set(Object.values(EXIT_CODE)).size, 3);
+});
+
+test('the workflow gates on the verdict, never on the raw step outcome', () => {
+  // `outcome` is only success/failure, so it cannot separate drift from a broken
+  // probe — and the probe step runs with continue-on-error, so a bare outcome
+  // check let an incomplete run pass as green.
+  const wf = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/daily-health.yml'), 'utf8');
+  assert.doesNotMatch(wf, /steps\.probe\.outcome/, 'a gate still keys on step outcome instead of the verdict');
+  for (const v of ['ok', 'drift', 'incomplete']) {
+    assert.ok(wf.includes(`steps.probe.outputs.verdict == '${v}'`), `no workflow step handles verdict '${v}'`);
+  }
 });

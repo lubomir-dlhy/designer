@@ -107,6 +107,43 @@ function todayUtc(): string {
 /** Test seam: the scrubber is the privacy boundary, so it is asserted directly. */
 export const scrubForTest = (s: string): string => scrubArtifact(s);
 
+/**
+ * The probe's verdict, as three distinct outcomes rather than a boolean.
+ *
+ *   ok         — anchors green AND the tooling half actually ran
+ *   drift      — UI anchors regressed; this is the selectors-drift-PR path
+ *   incomplete — the probe could not fully run (doctor never launched, or
+ *                reported a broken toolchain). NOT drift: opening a drift PR for
+ *                it would misfile a tooling fault as a claude.ai redesign.
+ *
+ * Exists because a two-state exit code forced a false choice: exit 0 let a
+ * half-broken probe read as green (and `Close stale drift PRs on green` would
+ * then close a legitimate open drift PR), while exit 2 would have misclassified
+ * it as UI drift. The workflow gates on this value, not on the raw step outcome.
+ */
+export type ProbeVerdict = 'ok' | 'drift' | 'incomplete';
+
+export function probeVerdict(input: { anchorFail: boolean; doctorSpawnError: string | null; doctorExitCode: number }): ProbeVerdict {
+  // Anchor drift wins: it is the signal the drift PR exists to carry, and it is
+  // actionable even when the toolchain is also unhappy.
+  if (input.anchorFail) return 'drift';
+  if (input.doctorSpawnError !== null) return 'incomplete';
+  if (input.doctorExitCode !== 0) return 'incomplete';
+  return 'ok';
+}
+
+/** Exit codes: 0 ok · 2 drift · 3 threw (main().catch) · 4 incomplete. */
+export const EXIT_CODE: Record<ProbeVerdict, number> = { ok: 0, drift: 2, incomplete: 4 };
+
+function ghOutput(key: string, value: string): void {
+  const target = process.env.GITHUB_OUTPUT;
+  if (!target) {
+    console.log(`[ci-health] (no GITHUB_OUTPUT) ${key}=${value}`);
+    return;
+  }
+  fs.appendFileSync(target, `${key}=${value}\n`);
+}
+
 function scrubArtifact(s: string): string {
   if (!s) return s;
   return s
@@ -474,11 +511,16 @@ async function main(): Promise<void> {
     );
     console.log(degraded.map((r) => `  ${r.id} — ${r.detail || r.description}`).join('\n'));
   }
-  // A doctor that never launched is a broken probe, not a passing one. It does
-  // NOT flip `payload.ok` (that stays the UI-anchor verdict, so this can't start
-  // opening drift PRs for a tooling fault) — but it must never again be silent.
+  // A doctor that never launched is a broken probe, not a passing one. It still
+  // does NOT flip `payload.ok` (that stays the UI-anchor verdict, so a tooling
+  // fault can never open a selectors-drift PR) — instead it produces the
+  // `incomplete` verdict below, which is a THIRD workflow path. An annotation
+  // alone does not change a step's outcome, so warning-only left a half-broken
+  // probe reading as green to `Close stale drift PRs on green`.
   if (doctor.spawnError) {
-    console.log(`::warning title=designer doctor did not run::${doctor.spawnError} — the tooling-state half of this probe was skipped`);
+    console.log(`::error title=designer doctor did not run::${doctor.spawnError} — the tooling-state half of this probe was skipped`);
+  } else if (doctor.exitCode !== 0) {
+    console.log(`::error title=designer doctor reported a broken toolchain::exit ${doctor.exitCode} — see the doctor block in the health artifact`);
   }
   if (fail) {
     const failed = results.filter((r) => r.status === 'fail').map((r) => `  ${r.id} — ${r.detail || r.description}`);
@@ -486,7 +528,16 @@ async function main(): Promise<void> {
   }
   console.log(`[ci-health] wrote ${path.relative(REPO_ROOT, outFile)}`);
 
-  if (fail) process.exit(2);
+  const verdict = probeVerdict({
+    anchorFail: fail,
+    doctorSpawnError: doctor.spawnError,
+    doctorExitCode: doctor.exitCode
+  });
+  // The workflow gates on this, not on the raw step outcome — `outcome` only has
+  // success/failure, which cannot separate "UI drifted" from "probe broke".
+  ghOutput('verdict', verdict);
+  console.log(`[ci-health] verdict=${verdict}`);
+  if (verdict !== 'ok') process.exit(EXIT_CODE[verdict]);
 }
 
 // Only orchestrate when executed as a script. Without this guard, merely
