@@ -86,7 +86,7 @@ Every verb has `--help`. `--key <k>` isolates parallel sessions (state at `~/.de
 
 ## MCP
 
-Six tools, registered at user scope by `designer setup`:
+Seven tools, registered at user scope by `designer setup`:
 
 | Tool | Purpose |
 |---|---|
@@ -95,6 +95,7 @@ Six tools, registered at user scope by `designer setup`:
 | `designer_ask` | Q&A with the assistant, no file changes. |
 | `designer_list` | `projects` or `files` (flat-only — see quirks). |
 | `designer_snapshot` | Capture current file. Paths + hash by default; `includeHtml: true` inlines. |
+| `designer_files_delete` | Delete one file from the open project — clearing superseded variants. **Dry-run by default** (`confirm: true` to act); snapshots the file first and aborts if that fails. Refuses on ambiguous names or a confirm dialog naming a different file. |
 | `designer_handoff` | Fetch + extract the project export zip → `project/` + `decision-record.md`. Auto-repairs em-dash filename bugs. |
 
 ## The loop
