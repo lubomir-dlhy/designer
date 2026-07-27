@@ -10,6 +10,7 @@ import {
   readRowsExpr,
   rowSelector,
   stampRowExpr,
+  stampMenuDeleteExpr,
   dialogPresentExpr,
   MENU_ITEM_DELETE,
   MENU_ITEM_DOWNLOAD,
@@ -158,6 +159,73 @@ async function getPreviewIframeSrc(browser: Browser): Promise<string> {
       )
       .catch(() => '')) || ''
   );
+}
+
+/**
+ * Hover the first switcher row, open its action menu, and check the menu the
+ * way PRODUCTION checks it — then stop. Never clicks Delete: the canary is
+ * single-file, so deleting its page would destroy the surface every other
+ * session.* anchor needs.
+ */
+async function probeRowMenu(
+  b: Browser,
+  entryCount: number
+): Promise<{ ok: boolean; status?: ProbeStatus; detail?: string }> {
+  // Row actions are hover-revealed and need TRUSTED input; a synthetic
+  // mouseover would not reveal them.
+  const stampedRow = await b.evalValue<string>(stampRowExpr(SEL.files, 0)).catch(() => 'error');
+  if (stampedRow !== 'stamped') return { ok: false, detail: `could not address the first switcher row (${stampedRow})` };
+  const rowSel = rowSelector();
+  await b.hover(rowSel).catch(() => null);
+  await sleep(400);
+  const moreSel = `${rowSel} ${SEL.files.rowMoreActions}`;
+  if (!(await b.isVisible(moreSel).catch(() => false))) {
+    await b.hover(rowSel).catch(() => null);
+    await sleep(500);
+  }
+  if (!(await b.isVisible(moreSel).catch(() => false))) {
+    return { ok: false, detail: `row actions did not reveal on hover (${SEL.files.rowMoreActions} not visible)` };
+  }
+
+  await b.click(moreSel).catch(() => null);
+  await sleep(600);
+  const items = await b
+    .evalValue<string[]>(
+      `(() => Array.from(document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button'))
+         .map((e) => (e.textContent || '').trim()).filter(Boolean))()`
+    )
+    .catch(() => [] as string[]);
+  if (items.length === 0) return { ok: false, detail: 'row "More actions" opened no role=menu items' };
+  if (!items.includes(MENU_ITEM_DOWNLOAD)) {
+    return { ok: false, detail: `row menu missing "${MENU_ITEM_DOWNLOAD}" (items: ${items.join(', ')})` };
+  }
+
+  // Accept EXACTLY what production accepts. `items.includes('Delete')` is looser
+  // than the delete flow's rule (exactly one exact-text match inside an open
+  // menu), so a duplicate or stale item would keep this anchor green while every
+  // deletion refused with 'menu-unavailable'. Run the real resolver — it only
+  // stamps an attribute, it never clicks. #F9.
+  const menuResolves = await b.evalValue<string>(stampMenuDeleteExpr()).catch(() => 'error');
+  if (menuResolves === 'stamped') {
+    return { ok: true, detail: `${entryCount} row(s); menu offers ${items.join(', ')}` };
+  }
+  if (items.includes(MENU_ITEM_DELETE)) {
+    return {
+      ok: false,
+      detail: `menu shows "${MENU_ITEM_DELETE}" but production's resolver refuses it (${menuResolves}) — deletion would fail with menu-unavailable`
+    };
+  }
+  // A one-page project plausibly cannot delete its last page. The canary is
+  // single-file by policy, so treat that as degraded rather than a daily
+  // false-fail.
+  if (entryCount === 1) {
+    return {
+      ok: true,
+      status: 'degraded',
+      detail: `single-page project — no "${MENU_ITEM_DELETE}" item offered (items: ${items.join(', ')})`
+    };
+  }
+  return { ok: false, detail: `row menu missing "${MENU_ITEM_DELETE}" (items: ${items.join(', ')})` };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -850,19 +918,20 @@ export const UI_ANCHORS: AnchorDef[] = [
     // file-panel.ts reason: a probe with its own copy of the DOM steps can stay
     // green while production silently no-ops (PR #77).
     check: async (b) => {
-      const rowsBefore = async (): Promise<SwitcherRow[]> =>
-        await b.evalValue<SwitcherRow[]>(readRowsExpr(SEL.files)).catch(() => [] as SwitcherRow[]);
-
       if (!(await hasSelector(b, SEL.files.switcherTrigger))) {
-        // No switcher on this surface (e.g. no project open) — inconclusive,
-        // not a regression.
         return { ok: true, status: 'skip', detail: 'files-switcher trigger absent — no project surface to probe' };
       }
 
       let entryCount = -1;
+      // Set during cleanup when the probe CHANGED the canary. It overrides the
+      // provisional verdict, so a probe that damaged the surface it protects can
+      // never report green — hovering a row reveals Duplicate and Rename right
+      // beside More actions, and a stray hit makes the single-file canary
+      // multi-file, which flakes session.fileListScrape from then on. #F11.
+      let mutated: string | null = null;
+      let verdict: { ok: boolean; status?: ProbeStatus; detail?: string };
+
       try {
-        // Trusted click, like production (a synthetic open leaves the menu
-        // scrim stranded — see switcherStateExpr).
         if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'closed') {
           await b.click(SEL.files.switcherTrigger).catch(() => null);
           await sleep(700);
@@ -874,70 +943,42 @@ export const UI_ANCHORS: AnchorDef[] = [
         await sleep(700);
         const opened = (await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) || 'error';
         if (opened !== 'open') {
-          return { ok: false, detail: `switcher trigger present but would not open (${opened})` };
-        }
-        const rows = await rowsBefore();
-        entryCount = rows.length;
-        if (rows.length === 0) {
-          return { ok: true, status: 'skip', detail: 'switcher opened but listed 0 rows — inconclusive' };
-        }
-
-        // Row actions are hover-revealed and need TRUSTED input; a synthetic
-        // mouseover would not reveal them (that asymmetry is the whole reason
-        // deleteFile uses the facade).
-        const stamped = await b.evalValue<string>(stampRowExpr(SEL.files, 0)).catch(() => 'error');
-        if (stamped !== 'stamped') return { ok: false, detail: `could not address the first switcher row (${stamped})` };
-        const rowSel = rowSelector();
-        await b.hover(rowSel).catch(() => null);
-        await sleep(400);
-        const moreSel = `${rowSel} ${SEL.files.rowMoreActions}`;
-        if (!(await b.isVisible(moreSel).catch(() => false))) {
-          await b.hover(rowSel).catch(() => null);
-          await sleep(500);
-        }
-        if (!(await b.isVisible(moreSel).catch(() => false))) {
-          return { ok: false, detail: `row actions did not reveal on hover (${SEL.files.rowMoreActions} not visible)` };
-        }
-
-        await b.click(moreSel).catch(() => null);
-        await sleep(600);
-        const items = await b
-          .evalValue<string[]>(
-            `(() => Array.from(document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button'))
-               .map((e) => (e.textContent || '').trim()).filter(Boolean))()`
-          )
-          .catch(() => [] as string[]);
-        if (items.length === 0) return { ok: false, detail: 'row "More actions" opened no role=menu items' };
-        if (!items.includes(MENU_ITEM_DOWNLOAD)) {
-          return { ok: false, detail: `row menu missing "${MENU_ITEM_DOWNLOAD}" (items: ${items.join(', ')})` };
-        }
-        if (!items.includes(MENU_ITEM_DELETE)) {
-          // A one-page project plausibly cannot delete its last page. The canary
-          // is single-file by policy, so treat that as degraded (the surface
-          // still resolves) rather than a daily false-fail.
-          if (entryCount === 1) {
-            return {
-              ok: true,
-              status: 'degraded',
-              detail: `single-page project — no "${MENU_ITEM_DELETE}" item offered (items: ${items.join(', ')})`
-            };
+          verdict = { ok: false, detail: `switcher trigger present but would not open (${opened})` };
+        } else {
+          const rows = await b.evalValue<SwitcherRow[]>(readRowsExpr(SEL.files)).catch(() => [] as SwitcherRow[]);
+          entryCount = rows.length;
+          if (rows.length === 0) {
+            verdict = { ok: true, status: 'skip', detail: 'switcher opened but listed 0 rows — inconclusive' };
+          } else {
+            verdict = await probeRowMenu(b, entryCount);
           }
-          return { ok: false, detail: `row menu missing "${MENU_ITEM_DELETE}" (items: ${items.join(', ')})` };
         }
-        return { ok: true, detail: `${entryCount} row(s); menu offers ${items.join(', ')}` };
+      } catch (e) {
+        verdict = { ok: false, detail: `switcher probe threw: ${(e as Error).message}` };
       } finally {
-        // Restoration is asserted below, not assumed: a left-open popover (or a
-        // stray Duplicate misclick making the canary multi-file) would poison
-        // every anchor that runs after this one.
         await b.press('Escape').catch(() => null);
         await sleep(250);
+        // Compare BEFORE closing, while the rows are still readable.
+        if (entryCount >= 0) {
+          const now = await b
+            .evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`)
+            .catch(() => -1);
+          if (now >= 0 && now !== entryCount) {
+            mutated = `probe changed the project's file count (${entryCount} → ${now}) — the canary may need repair`;
+          }
+        }
         if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open') {
           await b.click(SEL.files.switcherTrigger).catch(() => null);
           await sleep(300);
-          if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open') await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
+          if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open') {
+            await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
+          }
         }
         await sleep(250);
       }
+
+      if (mutated) return { ok: false, detail: `${mutated}${verdict.detail ? ` (probe result: ${verdict.detail})` : ''}` };
+      return verdict;
     }
   },
 
@@ -951,10 +992,10 @@ export const UI_ANCHORS: AnchorDef[] = [
     // asserting the selector resolves to NOTHING is the only non-destructive way
     // to probe a dialog that can only be raised by a real deletion.
     check: async (b) => {
-      const dialogSel = presenceSelector(SEL.files.confirmDialog, SEL.filesLegacy?.confirmDialog);
       // A failed read is NOT "clean" — mapping it to false would let this
       // anchor, whose whole job is proving cleanup, assert a page state it
       // never actually read (the PR #77 shape).
+      const dialogSel = presenceSelector(SEL.files.confirmDialog, SEL.filesLegacy?.confirmDialog);
       const dialogOpen = await b
         .evalValue<boolean>(dialogPresentExpr(SEL.files, SEL.filesLegacy?.confirmDialog))
         .catch(() => null);
@@ -970,7 +1011,13 @@ export const UI_ANCHORS: AnchorDef[] = [
       if (rows === null) {
         return { ok: true, status: 'skip', detail: 'could not read switcher state after the probe — inconclusive' };
       }
-      if (rows > 0) return { ok: true, status: 'degraded', detail: `switcher popover still open (${rows} rows) after probe cleanup` };
+      // A popover left open is a restoration FAILURE, not degraded: `degraded`
+      // means "works via a superseded selector", and isWorking() treats it as
+      // green. An open popover poisons every anchor that runs after this one,
+      // which is exactly what this probe exists to catch. #F10.
+      if (rows > 0) {
+        return { ok: false, detail: `switcher popover still open (${rows} rows) after probe cleanup — later session anchors will read a dirty page` };
+      }
       return { ok: true, detail: 'no dialog, switcher closed' };
     }
   }
