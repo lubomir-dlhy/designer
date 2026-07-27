@@ -72,6 +72,10 @@ Corollaries this ADR also fixes in place:
   files can share one label.
 - Health anchors probing a destructive surface walk to the last non-destructive
   step and stop.
+- Exclusion belongs to the shared RESOURCE, not to the object holding a handle
+  on it. The resource here is the agent-browser session's active tab, so every
+  operation that navigates or re-activates a tab serializes on the session —
+  re-entrantly per operation, so an outer verb may call inner ones.
 
 ## Rationale
 

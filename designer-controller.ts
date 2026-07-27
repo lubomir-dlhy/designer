@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
@@ -199,26 +200,33 @@ const DECISIVE_SUFFIX =
   '\n\nIf you would otherwise stop to ask clarifying questions, do not. Choose the most defensible answer for each axis yourself and proceed. Note your assumption in a one-line `<!-- assumed: ... -->` comment at the top of the relevant file so I can override on the next turn.';
 
 /**
- * In-process exclusion for the verbs that DRIVE a design tab.
+ * In-process exclusion for every operation that navigates or otherwise mutates
+ * a design tab.
  *
- * Keyed by (agent-browser session that owns the tab) + (project root), NOT by
- * controller key. In CDP mode — the default — agent-browser scopes its daemon
- * session by ENDPOINT (`designer-cdp-<port>`), so controllers for different
- * keys share one session; a per-instance lock therefore serialized nothing and
- * two MCP calls could drive one tab at once (#134 F3). Including the project
- * root keeps the exclusion precise: parallel `--key` work on DIFFERENT projects
- * uses different tabs and must not block each other, which a session-wide lock
- * would have done for the length of a 20-minute generation.
+ * THE RESOURCE IS THE SESSION'S ACTIVE TAB, so the lock is keyed by
+ * `browser.driverId` — the agent-browser session that owns it. Two earlier
+ * shapes were both wrong:
+ *  - per controller INSTANCE (#134 F3): in CDP mode agent-browser scopes its
+ *    daemon session by ENDPOINT (`designer-cdp-<port>`), so every key shares one
+ *    session and the lock serialized nothing.
+ *  - per (session + project root): `openGuarded` calls `browser.open()` on
+ *    whichever tab is ACTIVE — it does not select a tab first — and
+ *    `selectDesignTab` changes which tab that is. A navigation issued for
+ *    project B therefore moves the tab project A is mid-flight on, so scoping by
+ *    project let exactly the interleaving this exists to prevent through.
  *
- * KNOWN GAPS, both documented rather than closed here:
- *  - Only iterate/ask/deleteFile take this lock. listProjects, resumeSession,
- *    openFile, snapshotDesign and handoff also navigate the tab and can still
- *    interleave with a running generation or delete — e.g. a designer_list
- *    scope='projects' call navigates to /design home mid-flight. Widening the
- *    lock to every verb is its own change; do NOT read this lock as "concurrent
- *    tab access is solved".
- *  - In-process only. Two designer PROCESSES against one Chrome remain the
- *    cross-latch gap CLAUDE.md documents; closing that needs a lockfile.
+ * Parallel `--key` work is genuinely serialized by this, and that is correct
+ * rather than a regression: with one active tab per session those operations
+ * were never safe concurrently, they merely failed silently instead of loudly.
+ *
+ * Re-entrant per OPERATION via AsyncLocalStorage, not per instance: deleteFile
+ * legitimately calls fetchFile -> openFile, which must not deadlock, while two
+ * genuinely concurrent calls — even on the same controller — still exclude each
+ * other because they run in different async contexts.
+ *
+ * Remaining gap, documented not closed: in-process only. Two designer PROCESSES
+ * against one Chrome is the cross-latch gap CLAUDE.md documents; that needs a
+ * lockfile.
  */
 const DRIVER_LOCKS = new Map<string, string>();
 
@@ -240,6 +248,9 @@ export function tryAcquireDriverLock(locks: Map<string, string>, driver: string,
 export function releaseDriverLock(locks: Map<string, string>, driver: string): void {
   locks.delete(driver);
 }
+
+/** Lock keys held by the operation running in the current async context. */
+const LOCK_CTX = new AsyncLocalStorage<Set<string>>();
 
 export class DesignerController {
   readonly key: string;
@@ -336,7 +347,7 @@ export class DesignerController {
     return /Claude has some questions/i.test(last.text);
   }
 
-  async session({
+  private async _sessionBody({
     action = 'status',
     name,
     fidelity = 'wireframe'
@@ -397,7 +408,7 @@ export class DesignerController {
   // list them rather than guess by active-first. We also bind from the VALIDATED
   // candidate URL, not a currentUrl() re-read after activateTab (which could race
   // to a different tab).
-  async adoptSession(name?: string): Promise<{ ok: true; url: string; uuid: string; adopted: true; name?: string }> {
+  private async _adoptSessionBody(name?: string): Promise<{ ok: true; url: string; uuid: string; adopted: true; name?: string }> {
     await ensureCdpUp();
 
     const candidates = await this.candidateTabs((u) => SESSION_URL_RE.test(u));
@@ -450,7 +461,7 @@ export class DesignerController {
   // tab-drift failure it exists to catch.) Returns the count of candidates
   // considered (for error messaging). No-ops (matched:false, candidates:0) when
   // no design tab is open, leaving the current binding untouched.
-  async selectDesignTab(): Promise<{ matched: boolean; candidates: number }> {
+  private async _selectDesignTabBody(): Promise<{ matched: boolean; candidates: number }> {
     const stored = getSession(this.key);
     const targetRoot = stored?.designUrl?.split('?')[0];
     const candidates = await this.candidateTabs((u) =>
@@ -517,7 +528,7 @@ export class DesignerController {
   // still works: the probe/click/reload run over agent-browser, not CDP, so the
   // clear itself needs no CDP. Without this gate, the createSession pre-flight
   // would break `create` in the opt-out flow (PR #77 Codex P2).
-  async clearInterstitials({
+  private async _clearInterstitialsBody({
     maxPasses = 4,
     cloudflareWaitMs = 25_000,
     pollMs = 1500
@@ -610,7 +621,7 @@ export class DesignerController {
     return new Error(`Unresolved interstitial '${kind}' on claude.ai/design${suffix}.`);
   }
 
-  async ensureReady(): Promise<{ ok: true; url: string; inSession: boolean; interstitials?: InterstitialReport }> {
+  private async _ensureReadyBody(): Promise<{ ok: true; url: string; inSession: boolean; interstitials?: InterstitialReport }> {
     await ensureCdpUp();
 
     const picked = await this.selectMatchingTab();
@@ -673,7 +684,7 @@ export class DesignerController {
     return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession(), interstitials };
   }
 
-  async createSession(
+  private async _createSessionBody(
     name: string,
     fidelity: 'wireframe' | 'highfi' = 'wireframe',
     { timeoutMs = 20 * 60_000, stabilityMs = 4000 }: { timeoutMs?: number; stabilityMs?: number } = {}
@@ -766,7 +777,7 @@ export class DesignerController {
     return { ok: true, url, name, fidelity };
   }
 
-  async resumeSession(): Promise<{ ok: true; url: string }> {
+  private async _resumeSessionBody(): Promise<{ ok: true; url: string }> {
     const stored = getSession(this.key);
     if (!stored?.designUrl) throw new Error(`No designUrl stored for key=${this.key}. Create one first.`);
     await this.openGuarded(stored.designUrl);
@@ -1020,26 +1031,110 @@ export class DesignerController {
    *
    * See DRIVER_LOCKS above for the lock identity and the known gaps.
    */
-  /** Lock identity: the tab this controller drives = session + project root. */
+
+  // --- tab-driving entry points -------------------------------------------
+  // Every operation below navigates or otherwise mutates the session's ACTIVE
+  // TAB, so each one takes the tab lock (see DRIVER_LOCKS). They are re-entrant,
+  // so an outer verb may call any of them while holding the lock. Read-only
+  // verbs (currentUrl / getStatus / getChatTurns / getIframeSrc /
+  // fetchServedHtml / isInSession / isOnHome) deliberately do NOT lock.
+
+  async session(opts: Parameters<DesignerController['_sessionBody']>[0]): ReturnType<DesignerController['_sessionBody']> {
+    return this._withExclusive('session', () => this._sessionBody(opts));
+  }
+
+  async ensureReady(): ReturnType<DesignerController['_ensureReadyBody']> {
+    return this._withExclusive('ensureReady', () => this._ensureReadyBody());
+  }
+
+  async createSession(
+    ...args: Parameters<DesignerController['_createSessionBody']>
+  ): ReturnType<DesignerController['_createSessionBody']> {
+    return this._withExclusive('createSession', () => this._createSessionBody(...args));
+  }
+
+  async resumeSession(): ReturnType<DesignerController['_resumeSessionBody']> {
+    return this._withExclusive('resumeSession', () => this._resumeSessionBody());
+  }
+
+  async adoptSession(
+    ...args: Parameters<DesignerController['_adoptSessionBody']>
+  ): ReturnType<DesignerController['_adoptSessionBody']> {
+    return this._withExclusive('adoptSession', () => this._adoptSessionBody(...args));
+  }
+
+  async clearInterstitials(
+    ...args: Parameters<DesignerController['_clearInterstitialsBody']>
+  ): ReturnType<DesignerController['_clearInterstitialsBody']> {
+    return this._withExclusive('clearInterstitials', () => this._clearInterstitialsBody(...args));
+  }
+
+  async selectDesignTab(): ReturnType<DesignerController['_selectDesignTabBody']> {
+    return this._withExclusive('selectDesignTab', () => this._selectDesignTabBody());
+  }
+
+  async listProjects(): ReturnType<DesignerController['_listProjectsBody']> {
+    return this._withExclusive('listProjects', () => this._listProjectsBody());
+  }
+
+  async listFiles(): ReturnType<DesignerController['_listFilesBody']> {
+    return this._withExclusive('listFiles', () => this._listFilesBody());
+  }
+
+  async listFilesDetailed(): ReturnType<DesignerController['_listFilesDetailedBody']> {
+    return this._withExclusive('listFilesDetailed', () => this._listFilesDetailedBody());
+  }
+
+  async openFile(
+    ...args: Parameters<DesignerController['_openFileBody']>
+  ): ReturnType<DesignerController['_openFileBody']> {
+    return this._withExclusive('openFile', () => this._openFileBody(...args));
+  }
+
+  async fetchFile(
+    ...args: Parameters<DesignerController['_fetchFileBody']>
+  ): ReturnType<DesignerController['_fetchFileBody']> {
+    return this._withExclusive('fetchFile', () => this._fetchFileBody(...args));
+  }
+
+  async handoff(
+    ...args: Parameters<DesignerController['_handoffBody']>
+  ): ReturnType<DesignerController['_handoffBody']> {
+    return this._withExclusive('handoff', () => this._handoffBody(...args));
+  }
+  // --- end tab-driving entry points ----------------------------------------
+
+  /** Lock identity: the session whose ACTIVE TAB every navigation mutates. */
   private _lockKey(): string {
-    const root = getSession(this.key)?.designUrl?.split('?')[0] ?? `key:${this.key}`;
-    return `${this.browser.driverId}::${root}`;
+    return this.browser.driverId;
+  }
+
+  /** Who holds the tab, or null — null also when THIS operation already holds it. */
+  private _busyHolder(): string | null {
+    const resource = this._lockKey();
+    if (LOCK_CTX.getStore()?.has(resource)) return null;
+    return DRIVER_LOCKS.get(resource) ?? null;
   }
 
   private async _withExclusive<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    const driver = this._lockKey();
-    const held = tryAcquireDriverLock(DRIVER_LOCKS, driver, `${name}[${this.key}]`);
-    if (held) {
-      throw new Error(`designer is busy: ${held} is already driving this project's tab`);
-    }
+    const resource = this._lockKey();
+    // Re-entrant for the SAME operation: an outer verb that already holds the
+    // tab may call inner verbs freely (deleteFile -> fetchFile -> openFile).
+    const inherited = LOCK_CTX.getStore();
+    if (inherited?.has(resource)) return fn();
+
+    const held = tryAcquireDriverLock(DRIVER_LOCKS, resource, `${name}[${this.key}]`);
+    if (held) throw new Error(`designer is busy: ${held} is already driving the browser tab`);
+    const store = new Set(inherited ?? []);
+    store.add(resource);
     try {
-      return await fn();
+      return await LOCK_CTX.run(store, fn);
     } finally {
-      releaseDriverLock(DRIVER_LOCKS, driver);
+      releaseDriverLock(DRIVER_LOCKS, resource);
     }
   }
 
-  /** The exclusive verb currently driving this controller's tab, or null. */
+  /** The operation currently driving this controller's tab, or null. */
   get busyWith(): string | null {
     return DRIVER_LOCKS.get(this._lockKey()) ?? null;
   }
@@ -1156,7 +1251,7 @@ export class DesignerController {
     };
   }
 
-  async listProjects(): Promise<Array<{ name: string | null; sub: string | null; url: string | null }>> {
+  private async _listProjectsBody(): Promise<Array<{ name: string | null; sub: string | null; url: string | null }>> {
     await this.openGuarded(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
     // Presence-only wait, so canonical+legacy may be probed together — otherwise
@@ -1252,7 +1347,7 @@ export class DesignerController {
     return Array.isArray(json) ? json : [];
   }
 
-  async listFiles(): Promise<string[]> {
+  private async _listFilesBody(): Promise<string[]> {
     const { files } = await this.listFilesDetailed();
     return files;
   }
@@ -1262,7 +1357,7 @@ export class DesignerController {
   // auth against (/files endpoint is 401, no aria-expanded on rows, clicks
   // don't expand programmatically). When folders are present, the caller
   // should fall back to designer_handoff for an authoritative list.
-  async listFilesDetailed(): Promise<{ files: string[]; folders: string[]; authoritative: boolean }> {
+  private async _listFilesDetailedBody(): Promise<{ files: string[]; folders: string[]; authoritative: boolean }> {
     // Navigate to THIS key's project if we're not already there. Being in
     // any /p/ session isn't enough — a different key's files would be
     // returned against the currently-visible project by mistake.
@@ -1335,7 +1430,7 @@ export class DesignerController {
     };
   }
 
-  async openFile(filename: string): Promise<{ ok: true; file: string; url: string } | { ok: false; error: string; file: string; url: string }> {
+  private async _openFileBody(filename: string): Promise<{ ok: true; file: string; url: string } | { ok: false; error: string; file: string; url: string }> {
     const stored = getSession(this.key);
     const baseUrl = stored?.designUrl || (await this.currentUrl()).split('?')[0] || '';
     if (!/\/design\/p\//.test(baseUrl)) throw new Error('No project open for this key.');
@@ -1404,7 +1499,7 @@ export class DesignerController {
     return { ok: false, error: 'iframe-swap-timeout', file: filename, url };
   }
 
-  async fetchFile(filename: string): Promise<{ ok: boolean; file: string; iframeSrc?: string; html: string; htmlBytes: number; error?: string }> {
+  private async _fetchFileBody(filename: string): Promise<{ ok: boolean; file: string; iframeSrc?: string; html: string; htmlBytes: number; error?: string }> {
     const swap = await this.openFile(filename);
     if (!swap.ok) return { ok: false, error: swap.error, file: filename, html: '', htmlBytes: 0 };
     const { html, src } = await this.fetchServedHtml();
@@ -1439,7 +1534,7 @@ export class DesignerController {
     fileName: string,
     opts: { dryRun?: boolean; snapshot?: boolean } = {}
   ): Promise<DeleteFileResult> {
-    const heldBy = DRIVER_LOCKS.get(this._lockKey());
+    const heldBy = this._busyHolder();
     if (heldBy) {
       return { ok: false, error: 'busy', file: fileName, detail: `${heldBy} is already driving this tab` };
     }
@@ -2264,7 +2359,7 @@ export class DesignerController {
     return [...collected.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t);
   }
 
-  async handoff({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
+  private async _handoffBody({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
     await this._ensureInSession();
     if (openFile) await this.openFile(openFile);
 
