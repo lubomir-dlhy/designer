@@ -11,6 +11,7 @@ import {
   rowSelector,
   stampRowExpr,
   stampMenuDeleteExpr,
+  clearStampsExpr,
   dialogPresentExpr,
   MENU_ITEM_DELETE,
   MENU_ITEM_DOWNLOAD,
@@ -956,17 +957,28 @@ export const UI_ANCHORS: AnchorDef[] = [
       } catch (e) {
         verdict = { ok: false, detail: `switcher probe threw: ${(e as Error).message}` };
       } finally {
-        await b.press('Escape').catch(() => null);
-        await sleep(250);
-        // Compare BEFORE closing, while the rows are still readable.
+        // Cardinality check FIRST, while the popover is still open. Rows only
+        // exist while it is open, so a count taken after Escape is 0 for a
+        // perfectly healthy canary — comparing two counts measured under
+        // different page conditions is exactly the bug this check reports.
         if (entryCount >= 0) {
-          const now = await b
-            .evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`)
-            .catch(() => -1);
+          const stillOpen = (await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open';
+          const now = stillOpen
+            ? await b
+                .evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`)
+                .catch(() => -1)
+            : -1;
+          // -1 = not comparable (popover already closed, or read failed).
+          // Absence of evidence is not evidence of mutation.
           if (now >= 0 && now !== entryCount) {
             mutated = `probe changed the project's file count (${entryCount} → ${now}) — the canary may need repair`;
           }
         }
+        // Clear our own stamps before leaving; the probe must not persist a
+        // mutation on someone else's page.
+        await b.evalValue(clearStampsExpr()).catch(() => null);
+        await b.press('Escape').catch(() => null);
+        await sleep(250);
         if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open') {
           await b.click(SEL.files.switcherTrigger).catch(() => null);
           await sleep(300);
@@ -1010,6 +1022,12 @@ export const UI_ANCHORS: AnchorDef[] = [
         .catch(() => null);
       if (rows === null) {
         return { ok: true, status: 'skip', detail: 'could not read switcher state after the probe — inconclusive' };
+      }
+      const stamps = await b
+        .evalValue<number>(`document.querySelectorAll('[data-designer-target]').length`)
+        .catch(() => null);
+      if (stamps !== null && stamps > 0) {
+        return { ok: false, detail: `${stamps} designer stamp attribute(s) left on the page after the switcher probe` };
       }
       // A popover left open is a restoration FAILURE, not degraded: `degraded`
       // means "works via a superseded selector", and isWorking() treats it as

@@ -25,8 +25,14 @@ export function decodeConsent(value: string | boolean | undefined): ConsentDecis
   if (typeof value !== 'string') return { consent: false, recoveredPositional: null };
 
   const v = value.trim();
+  // `--yes=` yields an empty string, which expresses no consent at all. Falling
+  // through to the "it must be a filename" branch would have authorized a delete
+  // from it — the same shape as the bug this function exists to fix.
+  if (v === '') return { consent: false, recoveredPositional: null };
   if (/^(false|0|no|off)$/i.test(v)) return { consent: false, recoveredPositional: null };
   if (/^(true|1|yes|on)$/i.test(v)) return { consent: true, recoveredPositional: null };
   // Not a boolean literal, so it is the positional that followed the bare flag.
-  return { consent: true, recoveredPositional: value };
+  // Return the TRIMMED value: the raw one leaks the parser's spacing into the
+  // filename.
+  return { consent: true, recoveredPositional: v };
 }

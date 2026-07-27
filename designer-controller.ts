@@ -199,30 +199,53 @@ const DECISIVE_SUFFIX =
   '\n\nIf you would otherwise stop to ask clarifying questions, do not. Choose the most defensible answer for each axis yourself and proceed. Note your assumption in a one-line `<!-- assumed: ... -->` comment at the top of the relevant file so I can override on the next turn.';
 
 /**
- * In-process exclusion for the verbs that DRIVE a tab, keyed by the
- * agent-browser session that actually owns it (`browser.driverId`).
+ * In-process exclusion for the verbs that DRIVE a design tab.
  *
- * NOT by controller key: in CDP mode — the default — agent-browser scopes its
- * daemon session by ENDPOINT (`designer-cdp-<port>`), so controllers for
- * different keys share one session and one active tab. A per-instance lock
- * therefore serialized nothing: two MCP calls with different keys could drive
- * the same tab at once, and a delete landing inside iterate()'s pre/post
- * listFiles window corrupts its removedFiles diff. Review #134 F3.
+ * Keyed by (agent-browser session that owns the tab) + (project root), NOT by
+ * controller key. In CDP mode — the default — agent-browser scopes its daemon
+ * session by ENDPOINT (`designer-cdp-<port>`), so controllers for different
+ * keys share one session; a per-instance lock therefore serialized nothing and
+ * two MCP calls could drive one tab at once (#134 F3). Including the project
+ * root keeps the exclusion precise: parallel `--key` work on DIFFERENT projects
+ * uses different tabs and must not block each other, which a session-wide lock
+ * would have done for the length of a 20-minute generation.
  *
- * Still in-process only. Two designer PROCESSES against one Chrome remain the
- * documented cross-latch gap (CLAUDE.md); closing that needs a lockfile.
+ * KNOWN GAPS, both documented rather than closed here:
+ *  - Only iterate/ask/deleteFile take this lock. listProjects, resumeSession,
+ *    openFile, snapshotDesign and handoff also navigate the tab and can still
+ *    interleave with a running generation or delete — e.g. a designer_list
+ *    scope='projects' call navigates to /design home mid-flight. Widening the
+ *    lock to every verb is its own change; do NOT read this lock as "concurrent
+ *    tab access is solved".
+ *  - In-process only. Two designer PROCESSES against one Chrome remain the
+ *    cross-latch gap CLAUDE.md documents; closing that needs a lockfile.
  */
 const DRIVER_LOCKS = new Map<string, string>();
+
+/**
+ * Acquire the tab lock, or report who holds it. Extracted so the acquire/release
+ * decision is unit-testable rather than only reachable through a live browser —
+ * the same standard applied to decodeConsent in this series.
+ *
+ * Synchronous by construction: check and set happen in one tick, so two async
+ * callers cannot both observe the lock free.
+ */
+export function tryAcquireDriverLock(locks: Map<string, string>, driver: string, label: string): string | null {
+  const held = locks.get(driver);
+  if (held) return held;
+  locks.set(driver, label);
+  return null;
+}
+
+export function releaseDriverLock(locks: Map<string, string>, driver: string): void {
+  locks.delete(driver);
+}
 
 export class DesignerController {
   readonly key: string;
   readonly selectors: Selectors;
   readonly browser: Browser;
   private _preSendHtml = '';
-  // Name of the exclusive verb currently driving this key's tab, or null.
-  // INVARIANT: non-null iff an exclusive verb is mid-flight (released in a
-  // `finally`, so a throw can't wedge the controller).
-  private _exclusiveOp: string | null = null;
 
   constructor({ key, headed = true }: { key?: string; headed?: boolean } = {}) {
     this.key = key || 'default';
@@ -995,29 +1018,30 @@ export class DesignerController {
    * attributed to the generation, and deleting the open file mid-run tears down
    * the preview iframe the settle loop is reading.
    *
-   * Scope is one controller instance = one key = one agent-browser session. Two
-   * different keys driving the same Chrome tab remain the documented
-   * cross-latch gap; narrowing that needs a cross-process lock (deferred).
+   * See DRIVER_LOCKS above for the lock identity and the known gaps.
    */
+  /** Lock identity: the tab this controller drives = session + project root. */
+  private _lockKey(): string {
+    const root = getSession(this.key)?.designUrl?.split('?')[0] ?? `key:${this.key}`;
+    return `${this.browser.driverId}::${root}`;
+  }
+
   private async _withExclusive<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    const driver = this.browser.driverId;
-    const held = DRIVER_LOCKS.get(driver);
+    const driver = this._lockKey();
+    const held = tryAcquireDriverLock(DRIVER_LOCKS, driver, `${name}[${this.key}]`);
     if (held) {
-      throw new Error(`designer is busy: ${held} is already driving the tab (session ${driver})`);
+      throw new Error(`designer is busy: ${held} is already driving this project's tab`);
     }
-    DRIVER_LOCKS.set(driver, `${name}[${this.key}]`);
-    this._exclusiveOp = name;
     try {
       return await fn();
     } finally {
-      DRIVER_LOCKS.delete(driver);
-      this._exclusiveOp = null;
+      releaseDriverLock(DRIVER_LOCKS, driver);
     }
   }
 
   /** The exclusive verb currently driving this controller's tab, or null. */
   get busyWith(): string | null {
-    return DRIVER_LOCKS.get(this.browser.driverId) ?? null;
+    return DRIVER_LOCKS.get(this._lockKey()) ?? null;
   }
 
   async _ensureInSession(): Promise<void> {
@@ -1415,7 +1439,7 @@ export class DesignerController {
     fileName: string,
     opts: { dryRun?: boolean; snapshot?: boolean } = {}
   ): Promise<DeleteFileResult> {
-    const heldBy = DRIVER_LOCKS.get(this.browser.driverId);
+    const heldBy = DRIVER_LOCKS.get(this._lockKey());
     if (heldBy) {
       return { ok: false, error: 'busy', file: fileName, detail: `${heldBy} is already driving this tab` };
     }
@@ -1520,11 +1544,17 @@ export class DesignerController {
     const actuate = async (
       stamp: string,
       { verify, revalidate, budgetMs = 3500 }: { verify: () => Promise<boolean>; revalidate?: () => Promise<boolean>; budgetMs?: number }
-    ): Promise<string | null> => {
+    ): Promise<{ fail: string | null; dispatched: boolean }> => {
       const sel = stampedSelector(stamp);
+      // Set the instant a click is ISSUED, never after it is observed to work.
+      // "The dialog was not seen closing" is not "nothing was dispatched": the
+      // click may have landed and committed while the observation failed, which
+      // is the whole reason the caller needs to know. Review of #134 fixes.
+      let dispatched = false;
       const trusted = async (): Promise<void> => {
         const hit = (await this.browser.evalValue<string>(hitTestStatusExpr(sel)).catch(() => 'error')) || 'error';
         if (hit === 'hittable') {
+          dispatched = true;
           await this.browser.click(sel).catch(() => null);
           return;
         }
@@ -1537,6 +1567,7 @@ export class DesignerController {
         await sleep(600);
         if (revalidate && !(await revalidate())) return;
         if ((await this.browser.evalValue<string>(hitTestStatusExpr(sel)).catch(() => 'error')) === 'hittable') {
+          dispatched = true;
           await this.browser.click(sel).catch(() => null);
         }
       };
@@ -1544,24 +1575,26 @@ export class DesignerController {
       await trusted();
       const deadline = Date.now() + budgetMs;
       while (Date.now() < deadline) {
-        if (await verify()) return null;
+        if (await verify()) return { fail: null, dispatched };
         await sleep(300);
       }
       // Trusted input did not take. Re-confirm we are still acting on the right
       // thing, then dispatch synthetically to the same stamped node.
-      if (revalidate && !(await revalidate())) return 'revalidate-failed-before-synthetic';
+      if (revalidate && !(await revalidate())) return { fail: 'revalidate-failed-before-synthetic', dispatched };
+      // The synthetic click can commit too — mark dispatched BEFORE issuing it.
+      dispatched = true;
       const res = await this.browser
         .evalValue<string>(
           `(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`
         )
         .catch(() => 'error');
-      if (res !== 'clicked') return `synthetic click ${res}`;
+      if (res !== 'clicked') return { fail: `synthetic click ${res}`, dispatched };
       const deadline2 = Date.now() + budgetMs;
       while (Date.now() < deadline2) {
-        if (await verify()) return null;
+        if (await verify()) return { fail: null, dispatched };
         await sleep(300);
       }
-      return 'no state change after trusted and synthetic click';
+      return { fail: 'no state change after trusted and synthetic click', dispatched };
     };
 
     // --- RESOLVE (identical path for dry-run and delete, so a preview can
@@ -1693,9 +1726,10 @@ export class DesignerController {
           return { ok: false, error: 'menu-unavailable', file: fileName, detail: 'row menu did not open, or did not offer exactly one Delete', snapshotPath };
         }
       }
-      const menuClickFail = await actuate(STAMP_MENU_DELETE, {
+      const menuClick = await actuate(STAMP_MENU_DELETE, {
         verify: async () => await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => false)
       });
+      const menuClickFail = menuClick.fail;
       if (menuClickFail) {
         await this.browser.press('Escape').catch(() => null);
         return { ok: false, error: 'menu-unavailable', file: fileName, detail: `Delete menu item did not raise the confirm dialog (${menuClickFail})`, snapshotPath };
@@ -1767,7 +1801,7 @@ export class DesignerController {
         await this.browser.press('Escape').catch(() => null);
         return { ok: false, error: 'project-changed', file: fileName, detail: 'tab left the bound project mid-flow', snapshotPath };
       }
-      const confirmFail = await actuate(STAMP_CONFIRM_DELETE, {
+      const confirmClick = await actuate(STAMP_CONFIRM_DELETE, {
         // The dialog closing is the proof the click landed; the settle below is
         // what proves the FILE actually went away.
         verify: async () => !(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true)),
@@ -1784,33 +1818,34 @@ export class DesignerController {
           return again?.matched === true;
         }
       });
-      if (confirmFail) {
-        // actuate() only reports failure when the dialog never closed, i.e. no
-        // dispatch took effect — the file is untouched. (A dispatch that DID
-        // land closes the dialog and returns null.)
-        await this.browser.press('Escape').catch(() => null);
-        return { ok: false, error: 'dialog-stuck', file: fileName, detail: `confirm button never became clickable (${confirmFail})`, snapshotPath };
-      }
-
       // ---------------------------------------------------------------------
-      // COMMIT BOUNDARY. The confirm click has landed; the deletion may already have
-      // committed server-side. From here NOTHING may report a pre-click code —
-      // every unproven path is 'outcome-unknown', and post-success bookkeeping
-      // may not turn a proven deletion into a failure. #F4/#F5/#F6.
+      // COMMIT BOUNDARY — drawn at the first DISPATCH, not at actuate()'s
+      // return. A click that was issued may have committed even though the
+      // dialog was never observed closing, so from here nothing may claim
+      // "nothing was deleted". #F4, and the review of that fix.
       // ---------------------------------------------------------------------
       const unknown = (detail: string): DeleteFileResult => ({
         ok: false,
         error: 'outcome-unknown',
         file: fileName,
-        detail: `${detail} — the confirm click landed, so the file MAY be deleted; re-run with dryRun to see the current list`,
+        detail: `${detail} — a confirm click was dispatched, so the file MAY be deleted; re-run with dryRun to see the current list`,
         snapshotPath
       });
+
+      if (confirmClick.fail) {
+        await this.browser.press('Escape').catch(() => null);
+        // Only a confirm that was NEVER dispatched leaves a clean guarantee.
+        if (!confirmClick.dispatched) {
+          return { ok: false, error: 'dialog-stuck', file: fileName, detail: `confirm button never became clickable (${confirmClick.fail})`, snapshotPath };
+        }
+        return unknown(`the confirm dialog did not close after the click (${confirmClick.fail})`);
+      }
 
       // --- POSITIVE SETTLE ---
       const deadline = Date.now() + 15_000;
       let consecutive = 0;
       let lastGoodRows: SwitcherRow[] | null = null;
-      let sawTargetPresent = false;
+      let presentStreak = 0;
       while (Date.now() < deadline) {
         await sleep(600);
         if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
@@ -1818,6 +1853,11 @@ export class DesignerController {
         }
         await openSwitcher();
         const rows = await readRows();
+        // openSwitcher can sleep >1s, so re-assert AFTER the read: rows sampled
+        // from another project must never feed the settle.
+        if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
+          return unknown('the tab navigated away while the file list was being read');
+        }
         // Inconclusive: the popover is shut or unreadable. Counts toward
         // NEITHER success nor failure — an empty read is exactly what a
         // never-happened delete looks like.
@@ -1826,9 +1866,15 @@ export class DesignerController {
           continue;
         }
         const stillThere = matchingRowIndexes(rows, fileName).length;
-        if (stillThere === preLabelCount) sawTargetPresent = true;
+        // Symmetric evidence: "still there" must be observed as consistently as
+        // "gone". A sticky latch let ONE stale read taken ~1s after the click —
+        // before the list re-renders — assert "nothing was deleted" for the rest
+        // of the window. Review of the #F4 fix.
+        if (stillThere === preLabelCount && rows.length === preCount) presentStreak += 1;
+        else presentStreak = 0;
         if (rows.length === preCount - 1 && stillThere === preLabelCount - 1) {
           consecutive += 1;
+          presentStreak = 0;
           lastGoodRows = rows;
           if (consecutive >= 2) break;
         } else {
@@ -1840,16 +1886,29 @@ export class DesignerController {
         // 'still-present' is positive evidence the file survived (we read the
         // list and it was there). Anything else after the commit boundary is
         // genuinely unknown.
-        if (sawTargetPresent) {
+        // 'still-present' is a POST-CLICK claim, and it only holds when the row
+        // was read as present on two consecutive settled reads — the same bar
+        // success has to clear.
+        if (presentStreak >= 2) {
           return {
             ok: false,
             error: 'still-present',
             file: fileName,
-            detail: 'the row was still listed when the settle window expired',
+            detail: 'the row was still listed on consecutive reads after the click — the deletion did not take',
             snapshotPath
           };
         }
-        return unknown('could not read the file list after the click');
+        // Narrow, still-uncertain case: the click was dispatched and the list
+        // could not be read at all. Kept distinct from outcome-unknown so the
+        // union has no member that nothing produces.
+        return {
+          ok: false,
+          error: 'unverified',
+          file: fileName,
+          detail:
+            'the confirm click was dispatched but the file list could not be read afterwards — the file MAY be deleted; re-run with dryRun',
+          snapshotPath
+        };
       }
 
       // --- POST-SUCCESS ---

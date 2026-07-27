@@ -192,6 +192,11 @@ async function main(): Promise<void> {
       const snapshot = flags.snapshot === undefined ? true : flags.snapshot === true ? true : !/^(false|0|no)$/i.test(String(flags.snapshot));
       const r = await c.deleteFile(filename, { snapshot });
       console.log(JSON.stringify(r, null, 2));
+      // Post-deletion cleanup problems are operator-actionable and must not be
+      // buried in an exit-0 JSON blob when lesser advisories get a banner.
+      if (r.ok && !r.dryRun && r.warnings?.length) {
+        for (const w of r.warnings) console.error(`[designer] ${w}`);
+      }
       if (!r.ok) process.exitCode = 1;
       break;
     }
@@ -594,13 +599,17 @@ with --yes the exit code is 0 on success, 1 on any refusal.
 There is no undo in claude.ai/design, so the file's served HTML is written to the session dir
 before the delete and the delete is ABORTED if that snapshot fails (--snapshot=false overrides).
 
-Refusals that guarantee nothing was deleted: not-found, ambiguous (two files share a display
-label — the switcher hides extensions), confirm-mismatch (the product's dialog named a different
-file), menu-unavailable, snapshot-failed, wrong-project, busy, dialog-stuck, still-present.
+Refusals that guarantee nothing was deleted (no confirm click was ever dispatched): not-found,
+ambiguous (two files share a display label — the switcher hides extensions), confirm-mismatch
+(the product's dialog named a different file), menu-unavailable, snapshot-failed, wrong-project,
+busy, switcher-unavailable, dialog-stuck.
 
-Two codes are UNCERTAIN because the confirm click had already landed: 'unverified' (the file list
-could not be read afterwards) and 'outcome-unknown' (something failed after the commit point).
-Re-run the dry run to see the real state before retrying either.`,
+After a click was dispatched: 'still-present' means the file was read as still listed on
+consecutive checks, so it survived. 'unverified' and 'outcome-unknown' mean the outcome could NOT
+be proven — re-run the dry run to see the real state before retrying either.
+
+A successful delete can still carry warnings (printed to stderr): the file is gone, but some
+cleanup — updating the stored session, or navigating off the deleted file — did not complete.`,
 
   projects: `designer projects — list all Claude design projects visible on /design home.
 

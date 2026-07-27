@@ -51,7 +51,10 @@ independent of how a click is dispatched:
 2. **Positive outcome assertion.** Success requires observing the intended state
    change — for deletion, the row set shrinking by exactly one across two
    consecutive reads. Absence of evidence is never success: rows exist only
-   while the popover is open, so an empty read is `unverified`, not `ok`.
+   while the popover is open, so an unreadable list is uncertainty, not `ok`.
+   The negative claim is held to the same bar — "the file is still there" also
+   needs two consecutive reads, or it is reported as uncertain rather than as a
+   clean refusal.
 
 Given those, the click mechanism is a *reliability* concern, free to be layered:
 trusted click first, then dismiss the covering scrim and retry, then a synthetic
@@ -76,7 +79,8 @@ The rejected alternative — "mandate trusted input, ban synthetic clicks" — w
 the plan's original position. It fails on evidence (trusted input silently
 no-ops here) and, more importantly, it protects the wrong thing. A click that
 lands nowhere is *safe*: nothing is destroyed, and the outcome assertion reports
-`still-present` / `unverified`. A click that lands on the **wrong element** is
+the file as survived or the outcome as unknown, never as deleted. A click that
+lands on the **wrong element** is
 the catastrophic case, and no amount of input fidelity prevents it — only
 binding the assertion to the clicked node does.
 
@@ -92,8 +96,11 @@ Positive:
   a much stronger guarantee than "we clicked carefully".
 - The flow survives both failure modes observed live (dead trusted clicks,
   uncloseable scrims) without weakening any guarantee.
-- Every refusal code except `unverified` means nothing was deleted, and
-  `unverified` says so explicitly instead of guessing.
+- Refusal codes split on whether a confirm click was ever **dispatched**, not on
+  whether one was observed to work. Codes issued before any dispatch guarantee
+  nothing was deleted; `still-present` is post-dispatch positive evidence the
+  file survived; `unverified` and `outcome-unknown` say plainly that the outcome
+  is unknown rather than guessing at it.
 - The pattern generalizes to the rename/duplicate/download verbs on the same
   surface, and to project deletion if it is ever productionized.
 

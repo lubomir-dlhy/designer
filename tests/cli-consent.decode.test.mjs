@@ -35,3 +35,12 @@ test('a file literally named "false" is refused rather than silently deleted', (
   // Refusing to act is the safe side of that ambiguity.
   assert.equal(decodeConsent('false').consent, false);
 });
+
+test('--yes= (empty value) expresses no consent and is not a filename', () => {
+  assert.deepEqual(decodeConsent(''), { consent: false, recoveredPositional: null });
+  assert.deepEqual(decodeConsent('   '), { consent: false, recoveredPositional: null });
+});
+
+test('a recovered filename is trimmed, not passed through with the parser spacing', () => {
+  assert.deepEqual(decodeConsent(' landing.html '), { consent: true, recoveredPositional: 'landing.html' });
+});
