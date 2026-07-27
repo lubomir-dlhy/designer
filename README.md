@@ -95,7 +95,7 @@ Seven tools, registered at user scope by `designer setup`:
 | `designer_ask` | Q&A with the assistant, no file changes. |
 | `designer_list` | `projects` or `files` (flat-only — see quirks). |
 | `designer_snapshot` | Capture current file. Paths + hash by default; `includeHtml: true` inlines. |
-| `designer_files_delete` | Delete one file from the open project — clearing superseded variants. **Dry-run by default** (`confirm: true` to act); snapshots the file first and aborts if that fails. Refuses on ambiguous names or a confirm dialog naming a different file. |
+| `designer_files_delete` | Delete one file from the open project — clearing superseded variants. **Dry-run by default** (`confirm: true` to act); snapshots the file first and aborts if that fails. Refuses on ambiguous names or a confirm dialog naming a different file; distinguishes refusals (nothing deleted) from post-click uncertainty. |
 | `designer_handoff` | Fetch + extract the project export zip → `project/` + `decision-record.md`. Auto-repairs em-dash filename bugs. |
 
 ## The loop

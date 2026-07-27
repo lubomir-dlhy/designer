@@ -38,6 +38,16 @@ export interface CookieInfo {
 
 export interface Browser {
   session: string;
+  /**
+   * The agent-browser session this handle ACTUALLY drives.
+   *
+   * Not the same as `session`: in CDP mode `connectFlags()` scopes the daemon
+   * session by endpoint (`designer-cdp-<port>`), so every controller — whatever
+   * its key — shares one session and therefore one active tab. Anything that
+   * must serialize access to the tab has to key on THIS, not on the caller's
+   * key, or two keys will drive the same tab simultaneously.
+   */
+  driverId: string;
   run(args: string[], opts?: { input?: string; parseJson?: boolean }): Promise<string>;
   open(url: string): Promise<string>;
   close(): Promise<string | null>;
@@ -92,6 +102,8 @@ export function createBrowser({
     ...(headed && !cdp ? { AGENT_BROWSER_HEADED: '1' } : {})
   };
 
+  const cdpSessionName = cdp ? `designer-cdp-${cdp.replace(/[^a-zA-Z0-9.-]/g, '_')}` : null;
+
   function connectFlags(): string[] {
     if (!cdp) return [];
     // agent-browser's daemon honors --cdp only when it first creates a
@@ -100,7 +112,7 @@ export function createBrowser({
     // through 0.27.2). Scope the daemon session by endpoint so designer
     // never inherits a connection to some other Chrome — e.g. the user's
     // own agent-browser use against a different port (issue #32 triage).
-    const scope = ['--session', `designer-cdp-${cdp.replace(/[^a-zA-Z0-9.-]/g, '_')}`];
+    const scope = ['--session', cdpSessionName as string];
     if (cdp === 'auto' || cdp === '1' || cdp === 'true') return [...scope, '--auto-connect'];
     return [...scope, '--cdp', cdp];
   }
@@ -139,6 +151,7 @@ export function createBrowser({
 
   return {
     session,
+    driverId: cdpSessionName ?? session,
     run,
     open: (url) => run(['open', url]),
     close: () => run(['close']).catch(() => null),

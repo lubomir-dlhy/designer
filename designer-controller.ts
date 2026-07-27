@@ -50,7 +50,15 @@ export interface ChatTurn {
   text: string;
 }
 
-/** Why a delete refused. Every code means NOTHING WAS DELETED except 'unverified' (unknown). */
+/**
+ * Why a delete refused.
+ *
+ * Every code means NOTHING WAS DELETED **except** the two uncertain ones:
+ * `unverified` (the click landed but the file list could not be read) and
+ * `outcome-unknown` (something failed after the confirm click may have
+ * committed). Codes are never reused across that boundary — once the
+ * irreversible click is dispatched, no pre-click code can be returned. #F4.
+ */
 export type DeleteFileError =
   | 'busy'
   | 'wrong-project'
@@ -63,7 +71,8 @@ export type DeleteFileError =
   | 'snapshot-failed'
   | 'project-changed'
   | 'still-present'
-  | 'unverified';
+  | 'unverified'
+  | 'outcome-unknown';
 
 export type DeleteFileResult =
   | {
@@ -76,6 +85,8 @@ export type DeleteFileResult =
       remainingLabels: string[];
       snapshotPath: string | null;
       activeFileReset: boolean;
+      /** Non-fatal cleanup/bookkeeping problems AFTER a proven deletion. */
+      warnings?: string[];
     }
   | { ok: true; dryRun: true; file: string; wouldDelete: string | null; ambiguous: boolean; rows: string[] }
   | {
@@ -186,6 +197,22 @@ export const SESSION_URL_RE = /^https:\/\/claude\.ai\/design\/p\/([a-f0-9-]+)/i;
 const FLAT_LAYOUT_SUFFIX = '\n\nFile layout: keep all generated files at the project root. No subfolders.';
 const DECISIVE_SUFFIX =
   '\n\nIf you would otherwise stop to ask clarifying questions, do not. Choose the most defensible answer for each axis yourself and proceed. Note your assumption in a one-line `<!-- assumed: ... -->` comment at the top of the relevant file so I can override on the next turn.';
+
+/**
+ * In-process exclusion for the verbs that DRIVE a tab, keyed by the
+ * agent-browser session that actually owns it (`browser.driverId`).
+ *
+ * NOT by controller key: in CDP mode — the default — agent-browser scopes its
+ * daemon session by ENDPOINT (`designer-cdp-<port>`), so controllers for
+ * different keys share one session and one active tab. A per-instance lock
+ * therefore serialized nothing: two MCP calls with different keys could drive
+ * the same tab at once, and a delete landing inside iterate()'s pre/post
+ * listFiles window corrupts its removedFiles diff. Review #134 F3.
+ *
+ * Still in-process only. Two designer PROCESSES against one Chrome remain the
+ * documented cross-latch gap (CLAUDE.md); closing that needs a lockfile.
+ */
+const DRIVER_LOCKS = new Map<string, string>();
 
 export class DesignerController {
   readonly key: string;
@@ -973,20 +1000,24 @@ export class DesignerController {
    * cross-latch gap; narrowing that needs a cross-process lock (deferred).
    */
   private async _withExclusive<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    if (this._exclusiveOp) {
-      throw new Error(`designer[${this.key}] is busy: ${this._exclusiveOp} is already driving this tab`);
+    const driver = this.browser.driverId;
+    const held = DRIVER_LOCKS.get(driver);
+    if (held) {
+      throw new Error(`designer is busy: ${held} is already driving the tab (session ${driver})`);
     }
+    DRIVER_LOCKS.set(driver, `${name}[${this.key}]`);
     this._exclusiveOp = name;
     try {
       return await fn();
     } finally {
+      DRIVER_LOCKS.delete(driver);
       this._exclusiveOp = null;
     }
   }
 
-  /** The exclusive verb currently driving this key's tab, or null. */
+  /** The exclusive verb currently driving this controller's tab, or null. */
   get busyWith(): string | null {
-    return this._exclusiveOp;
+    return DRIVER_LOCKS.get(this.browser.driverId) ?? null;
   }
 
   async _ensureInSession(): Promise<void> {
@@ -1384,8 +1415,9 @@ export class DesignerController {
     fileName: string,
     opts: { dryRun?: boolean; snapshot?: boolean } = {}
   ): Promise<DeleteFileResult> {
-    if (this._exclusiveOp) {
-      return { ok: false, error: 'busy', file: fileName, detail: `${this._exclusiveOp} is already driving this tab` };
+    const heldBy = DRIVER_LOCKS.get(this.browser.driverId);
+    if (heldBy) {
+      return { ok: false, error: 'busy', file: fileName, detail: `${heldBy} is already driving this tab` };
     }
     return this._withExclusive('deleteFile', () => this._deleteFileBody(fileName, opts));
   }
@@ -1594,8 +1626,19 @@ export class DesignerController {
       const dir = sessionDir(this.key);
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       snapshotPath = path.join(dir, `deleted-${stamp}-${fileName.replace(/[^\w.-]+/g, '_')}`);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(snapshotPath, fetched.html);
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(snapshotPath, fetched.html);
+      } catch (e) {
+        // The snapshot is a precondition, so a write failure refuses the delete
+        // through the declared union rather than throwing past it. #F8.
+        return {
+          ok: false,
+          error: 'snapshot-failed',
+          file: fileName,
+          detail: `could not write the backup to ${snapshotPath}: ${(e as Error).message}`
+        };
+      }
       // fetchFile navigates (openFile) — re-pin and re-resolve before acting.
       if (!(await pinToProject())) return { ok: false, error: 'wrong-project', file: fileName, snapshotPath };
       resolved = await resolve();
@@ -1680,13 +1723,18 @@ export class DesignerController {
       if (!verdict?.found || verdict.stamped === null) {
         // The buttons could not be identified (e.g. the product renamed them),
         // so there is nothing safe to click — dismiss and prove it.
-        const dismissed = verdict?.found ? await dismissAndProve() : true;
+        // A null verdict means the READ failed, not that the page is clean —
+        // a modal may well be up. Only "the expression ran and saw no dialog"
+        // justifies assuming there is nothing to dismiss. #F7.
+        const dismissed = verdict === null || verdict.found ? await dismissAndProve() : true;
         return {
           ok: false,
           error: dismissed ? 'confirm-mismatch' : 'dialog-stuck',
           file: fileName,
           dialogFile: verdict?.dialogFile ?? null,
-          detail: !verdict?.found
+          detail: verdict === null
+            ? 'could not read the confirm dialog'
+            : !verdict.found
             ? 'confirm dialog did not appear'
             : dismissed
               ? 'confirm dialog buttons could not be identified; dialog dismissed, nothing deleted'
@@ -1723,7 +1771,13 @@ export class DesignerController {
         // The dialog closing is the proof the click landed; the settle below is
         // what proves the FILE actually went away.
         verify: async () => !(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true)),
+        // Re-checked immediately before EVERY dispatch, trusted or synthetic.
+        // The pre-click root guard above is not enough on its own: actuate()
+        // can wait seconds before the synthetic fallback, and the tab is shared
+        // across keys, so both the project AND the filename echo have to still
+        // be right at the moment of the click. #F1.
         revalidate: async () => {
+          if ((await this.currentUrl()).split('?')[0] !== targetRoot) return false;
           const again = await this.browser
             .evalValue<{ matched: boolean }>(verifyConfirmDialogExpr(F, legacyDialog, fileName))
             .catch(() => null);
@@ -1731,11 +1785,26 @@ export class DesignerController {
         }
       });
       if (confirmFail) {
-        // Nothing was clicked — the dialog is still up. Dismiss and report; the
-        // file is untouched.
+        // actuate() only reports failure when the dialog never closed, i.e. no
+        // dispatch took effect — the file is untouched. (A dispatch that DID
+        // land closes the dialog and returns null.)
         await this.browser.press('Escape').catch(() => null);
         return { ok: false, error: 'dialog-stuck', file: fileName, detail: `confirm button never became clickable (${confirmFail})`, snapshotPath };
       }
+
+      // ---------------------------------------------------------------------
+      // COMMIT BOUNDARY. The confirm click has landed; the deletion may already have
+      // committed server-side. From here NOTHING may report a pre-click code —
+      // every unproven path is 'outcome-unknown', and post-success bookkeeping
+      // may not turn a proven deletion into a failure. #F4/#F5/#F6.
+      // ---------------------------------------------------------------------
+      const unknown = (detail: string): DeleteFileResult => ({
+        ok: false,
+        error: 'outcome-unknown',
+        file: fileName,
+        detail: `${detail} — the confirm click landed, so the file MAY be deleted; re-run with dryRun to see the current list`,
+        snapshotPath
+      });
 
       // --- POSITIVE SETTLE ---
       const deadline = Date.now() + 15_000;
@@ -1745,7 +1814,7 @@ export class DesignerController {
       while (Date.now() < deadline) {
         await sleep(600);
         if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
-          return { ok: false, error: 'project-changed', file: fileName, detail: 'tab navigated away during settle', snapshotPath };
+          return unknown('the tab navigated away from the project during the settle');
         }
         await openSwitcher();
         const rows = await readRows();
@@ -1768,19 +1837,24 @@ export class DesignerController {
       }
 
       if (consecutive < 2 || !lastGoodRows) {
-        return {
-          ok: false,
-          error: sawTargetPresent ? 'still-present' : 'unverified',
-          file: fileName,
-          detail: sawTargetPresent
-            ? 'the row was still listed when the settle window expired'
-            : 'could not read the file list after the click — deletion NOT confirmed; re-check with a dry run',
-          snapshotPath
-        };
+        // 'still-present' is positive evidence the file survived (we read the
+        // list and it was there). Anything else after the commit boundary is
+        // genuinely unknown.
+        if (sawTargetPresent) {
+          return {
+            ok: false,
+            error: 'still-present',
+            file: fileName,
+            detail: 'the row was still listed when the settle window expired',
+            snapshotPath
+          };
+        }
+        return unknown('could not read the file list after the click');
       }
 
       // --- POST-SUCCESS ---
       let activeFileReset = false;
+      const warnings: string[] = [];
       // The snapshot step calls fetchFile → openFile, which navigates the tab to
       // ?file=<fileName>. So the pre-flight sample is not enough: re-read the
       // tab's file param as it stands now, or a snapshot-first delete leaves the
@@ -1791,13 +1865,31 @@ export class DesignerController {
         // leaving designUrl as-is would resume every future session onto it.
         await this.openGuarded(targetRoot).catch(() => null);
         await this.browser.waitLoad('load').catch(() => null);
-        // targetRoot is `string` (the !targetRoot throw above narrowed it) and is
-        // by construction stored.designUrl minus its query — no casts needed.
-        const strip = (u?: string | null): string | undefined => (u ? u.split('?')[0] : undefined);
-        upsertSession(this.key, { designUrl: targetRoot, lastUrl: strip(stored?.lastUrl) });
-        activeFileReset = true;
+        // Prove we actually arrived before claiming the reset or rewriting
+        // stored state — swallowing the navigation error and reporting
+        // activeFileReset:true left the tab on a deleted file's URL. #F6.
+        const arrived = (await this.currentUrl()).split('?')[0] === targetRoot;
+        if (arrived) {
+          // targetRoot is `string` (narrowed by the !targetRoot throw above) and
+          // is by construction stored.designUrl minus its query — no casts.
+          const strip = (u?: string | null): string | undefined => (u ? u.split('?')[0] : undefined);
+          try {
+            upsertSession(this.key, { designUrl: targetRoot, lastUrl: strip(stored?.lastUrl) });
+            activeFileReset = true;
+          } catch (e) {
+            warnings.push(`stored session not updated (${(e as Error).message}); it still points at the deleted file`);
+          }
+        } else {
+          warnings.push('the tab is still on the deleted file URL — navigate to the project root by hand');
+        }
       }
-      appendHistory(this.key, { kind: 'file-delete', file: fileName, at: new Date().toISOString() });
+      // The deletion is already committed; a failed history write must not turn
+      // a completed non-idempotent operation into a reported failure. #F5.
+      try {
+        appendHistory(this.key, { kind: 'file-delete', file: fileName, at: new Date().toISOString() });
+      } catch (e) {
+        warnings.push(`history not recorded (${(e as Error).message})`);
+      }
       return {
         ok: true,
         dryRun: false,
@@ -1805,7 +1897,8 @@ export class DesignerController {
         deletedLabel: displayLabelFor(fileName),
         remainingLabels: lastGoodRows.map((r) => r.label),
         snapshotPath,
-        activeFileReset
+        activeFileReset,
+        ...(warnings.length ? { warnings } : {})
       };
     } finally {
       await clearStamps();
