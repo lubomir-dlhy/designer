@@ -123,8 +123,8 @@ async function main(): Promise<void> {
       const c = new DesignerController({ key });
       await c.ensureReady();
       const filename = flags.file as string | undefined;
-      if (filename) await c.openFile(filename);
-      const snap = await c.snapshotDesign();
+      // Single locked operation — see snapshotFile.
+      const snap = await c.snapshotFile(filename);
       if (snap.url) console.log(`\nTaste here: ${snap.url}\n`);
       console.log(
         JSON.stringify(

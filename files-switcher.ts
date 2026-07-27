@@ -344,3 +344,36 @@ export function dialogNamesFile(text: string, filename: string): boolean {
   const { dialogFile } = parseConfirmDialog(text);
   return dialogFile !== null && dialogFile === filename;
 }
+
+// --- settle arithmetic (pure, so the evidence rule is tested not asserted) ---
+
+export type SettleRead =
+  | { kind: 'inconclusive' }            // list unreadable / popover shut
+  | { kind: 'gone' }                    // row set shrank by exactly one
+  | { kind: 'present' }                 // target still listed, full cardinality
+  | { kind: 'other' };                  // some other shape
+
+export interface SettleCounters {
+  consecutive: number;   // consecutive 'gone' reads -> success at 2
+  presentStreak: number; // consecutive 'present' reads -> still-present at 2
+}
+
+/**
+ * Fold one settle observation into the counters.
+ *
+ * Both claims require TWO CONSECUTIVE supporting reads, and an inconclusive read
+ * breaks BOTH streaks. Resetting only the success counter is what let
+ * 'still-present' — a "nothing was deleted" verdict returned after an
+ * irreversible click — be satisfied by two reads separated by an unreadable one.
+ */
+export function foldSettleRead(c: SettleCounters, read: SettleRead): SettleCounters {
+  switch (read.kind) {
+    case 'gone':
+      return { consecutive: c.consecutive + 1, presentStreak: 0 };
+    case 'present':
+      return { consecutive: 0, presentStreak: c.presentStreak + 1 };
+    case 'inconclusive':
+    case 'other':
+      return { consecutive: 0, presentStreak: 0 };
+  }
+}

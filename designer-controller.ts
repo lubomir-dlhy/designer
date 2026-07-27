@@ -38,6 +38,8 @@ import {
   scrimDismissPointExpr,
   stampedSelector,
   matchingRowIndexes,
+  foldSettleRead,
+  type SettleCounters,
   displayLabelFor,
   STAMP_MENU_DELETE,
   STAMP_CONFIRM_DELETE,
@@ -322,7 +324,13 @@ export class DesignerController {
     const stored = getSession(this.key);
     const url = await this.currentUrl();
     const inSession = /\/design\/p\/[a-f0-9-]+/i.test(url);
-    const availableFiles = inSession ? await this.listFiles().catch(() => []) : [];
+    // Read-only by construction. This used to call listFiles(), which navigates
+    // (openGuarded) and — once tab access became locked — threw 'busy' for the
+    // length of any generation, swallowed into an empty array. A status read
+    // that silently reports "no files" is worse than one that reports what is
+    // actually on screen, and designer_session status is documented as a pure
+    // read that is safe to call at any time. Review of e038462.
+    const availableFiles = inSession ? await this._scrapeVisibleFiles() : [];
     const awaitingClarification = inSession ? await this.detectAwaitingClarification() : false;
     return {
       key: this.key,
@@ -988,7 +996,7 @@ export class DesignerController {
     });
   }
 
-  async snapshotDesign({
+  private async _snapshotDesignBody({
     html: knownHtml,
     iframeSrc: knownSrc
   }: { html?: string | null; iframeSrc?: string } = {}): Promise<{
@@ -1040,6 +1048,10 @@ export class DesignerController {
   // fetchServedHtml / isInSession / isOnHome) deliberately do NOT lock.
 
   async session(opts: Parameters<DesignerController['_sessionBody']>[0]): ReturnType<DesignerController['_sessionBody']> {
+    // 'status' is documented as a pure read that is safe to call at any time —
+    // including while a 20-minute generation holds the tab — so it must NOT take
+    // the lock (which rejects rather than queues). Every other action navigates.
+    if ((opts?.action ?? 'status') === 'status') return this._sessionBody(opts);
     return this._withExclusive('session', () => this._sessionBody(opts));
   }
 
@@ -1102,6 +1114,24 @@ export class DesignerController {
   ): ReturnType<DesignerController['_handoffBody']> {
     return this._withExclusive('handoff', () => this._handoffBody(...args));
   }
+
+  /**
+   * Switch to `filename` (optional) and snapshot it, as ONE locked operation.
+   *
+   * Callers used to do `openFile()` then `snapshotDesign()`, which took and
+   * released the lock twice: a concurrent verb could move the tab between them,
+   * so the snapshot was read off a different page while the response still named
+   * the requested file. Compound operations need one window, not two.
+   */
+  async snapshotFile(
+    filename?: string
+  ): Promise<{ swap: Awaited<ReturnType<DesignerController['_openFileBody']>> | null } & Awaited<ReturnType<DesignerController['_snapshotDesignBody']>>> {
+    return this._withExclusive('snapshotFile', async () => {
+      const swap = filename ? await this._openFileBody(filename) : null;
+      const snap = await this._snapshotDesignBody({});
+      return { swap, ...snap };
+    });
+  }
   // --- end tab-driving entry points ----------------------------------------
 
   /** Lock identity: the session whose ACTIVE TAB every navigation mutates. */
@@ -1130,13 +1160,18 @@ export class DesignerController {
     try {
       return await LOCK_CTX.run(store, fn);
     } finally {
+      // Invalidate the grant as well as the lock. A detached continuation
+      // started inside the body keeps this async context after the release; if
+      // it called a locked verb it would take the re-entrant branch and drive
+      // the tab with NO lock held. Review of e038462.
+      store.delete(resource);
       releaseDriverLock(DRIVER_LOCKS, resource);
     }
   }
 
   /** The operation currently driving this controller's tab, or null. */
   get busyWith(): string | null {
-    return DRIVER_LOCKS.get(this._lockKey()) ?? null;
+    return this._busyHolder();
   }
 
   async _ensureInSession(): Promise<void> {
@@ -1213,7 +1248,7 @@ export class DesignerController {
     const newFiles = postFiles.filter((f) => !preFiles.includes(f));
     const removedFiles = preFiles.filter((f) => !postFiles.includes(f));
 
-    const snap = await this.snapshotDesign({ html: done.html, iframeSrc: done.iframeSrc });
+    const snap = await this._snapshotDesignBody({ html: done.html, iframeSrc: done.iframeSrc });
     const htmlHash = snap.html ? hashHex(snap.html) : null;
     const activeFile = extractFileParam(snap.url);
 
@@ -1345,6 +1380,35 @@ export class DesignerController {
       })()`
     ).catch(() => []);
     return Array.isArray(json) ? json : [];
+  }
+
+  /**
+   * Filenames visible on the CURRENT page. Never navigates and never opens the
+   * panel, so it is safe to call while another operation holds the tab — it
+   * reports what is on screen, which may be empty if the file panel is closed.
+   * For an authoritative list use listFiles()/listFilesDetailed().
+   */
+  private async _scrapeVisibleFiles(): Promise<string[]> {
+    return (
+      (await this.browser
+        .evalValue<string[]>(
+          `(() => {
+            const seen = new Set();
+            const files = [];
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+              const t = (node.textContent || '').trim();
+              if (!/^[A-Za-z0-9 _.()\\-]+\\.(html|js|css|jsx|tsx|ts|md|json|svg)$/i.test(t)) continue;
+              if (t.length > 80 || seen.has(t)) continue;
+              seen.add(t);
+              files.push(t);
+            }
+            return files;
+          })()`
+        )
+        .catch(() => [] as string[])) || []
+    );
   }
 
   private async _listFilesBody(): Promise<string[]> {
@@ -1658,6 +1722,12 @@ export class DesignerController {
           .evalValue<{ x: number; y: number } | null>(scrimDismissPointExpr(F, legacyDialog))
           .catch(() => null);
         if (!pt) return;
+        // This click is aimed at the scrim, but it IS a real dispatch into a
+        // page holding a live confirm dialog — if the scrim unmounts between the
+        // point being chosen and the click landing, it can reach the dialog.
+        // Treating it as non-dispatch is how 'dialog-stuck' could be claimed
+        // after a click. Review of e038462.
+        dispatched = true;
         await this.browser.clickAt(pt.x, pt.y).catch(() => null);
         await sleep(600);
         if (revalidate && !(await revalidate())) return;
@@ -1923,7 +1993,11 @@ export class DesignerController {
         ok: false,
         error: 'outcome-unknown',
         file: fileName,
-        detail: `${detail} — a confirm click was dispatched, so the file MAY be deleted; re-run with dryRun to see the current list`,
+        detail: `${detail} — ${
+          confirmClick.dispatched
+            ? 'a confirm click was dispatched, so the file MAY be deleted'
+            : 'the dialog closed without an observed dispatch, so this run cannot account for the outcome'
+        }; re-run with dryRun to see the current list`,
         snapshotPath
       });
 
@@ -1938,9 +2012,8 @@ export class DesignerController {
 
       // --- POSITIVE SETTLE ---
       const deadline = Date.now() + 15_000;
-      let consecutive = 0;
+      let counters: SettleCounters = { consecutive: 0, presentStreak: 0 };
       let lastGoodRows: SwitcherRow[] | null = null;
-      let presentStreak = 0;
       while (Date.now() < deadline) {
         await sleep(600);
         if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
@@ -1957,34 +2030,26 @@ export class DesignerController {
         // NEITHER success nor failure — an empty read is exactly what a
         // never-happened delete looks like.
         if (!rows || rows.length === 0) {
-          consecutive = 0;
+          // Breaks BOTH streaks — see foldSettleRead.
+          counters = foldSettleRead(counters, { kind: 'inconclusive' });
           continue;
         }
         const stillThere = matchingRowIndexes(rows, fileName).length;
-        // Symmetric evidence: "still there" must be observed as consistently as
-        // "gone". A sticky latch let ONE stale read taken ~1s after the click —
-        // before the list re-renders — assert "nothing was deleted" for the rest
-        // of the window. Review of the #F4 fix.
-        if (stillThere === preLabelCount && rows.length === preCount) presentStreak += 1;
-        else presentStreak = 0;
-        if (rows.length === preCount - 1 && stillThere === preLabelCount - 1) {
-          consecutive += 1;
-          presentStreak = 0;
-          lastGoodRows = rows;
-          if (consecutive >= 2) break;
-        } else {
-          consecutive = 0;
-        }
+        const gone = rows.length === preCount - 1 && stillThere === preLabelCount - 1;
+        const present = rows.length === preCount && stillThere === preLabelCount;
+        counters = foldSettleRead(counters, { kind: gone ? 'gone' : present ? 'present' : 'other' });
+        if (gone) lastGoodRows = rows;
+        if (counters.consecutive >= 2) break;
       }
 
-      if (consecutive < 2 || !lastGoodRows) {
+      if (counters.consecutive < 2 || !lastGoodRows) {
         // 'still-present' is positive evidence the file survived (we read the
         // list and it was there). Anything else after the commit boundary is
         // genuinely unknown.
         // 'still-present' is a POST-CLICK claim, and it only holds when the row
         // was read as present on two consecutive settled reads — the same bar
         // success has to clear.
-        if (presentStreak >= 2) {
+        if (counters.presentStreak >= 2) {
           return {
             ok: false,
             error: 'still-present',

@@ -158,11 +158,11 @@ server.registerTool(
   },
   async ({ key, filename, includeHtml = false, screenshot = true }) => {
     const c = getController(key);
-    if (filename) {
-      const swap = await c.openFile(filename);
-      if (!swap.ok) return textResult({ ok: false, error: swap.error, file: filename });
-    }
-    const snap = await c.snapshotDesign({});
+    // One locked operation: switching files and reading the result must not
+    // straddle two lock windows, or a concurrent verb can move the tab between
+    // them and the snapshot describes a different page than `file` claims.
+    const snap = await c.snapshotFile(filename);
+    if (snap.swap && !snap.swap.ok) return textResult({ ok: false, error: snap.swap.error, file: filename });
     let htmlPath: string | null = null;
     if (snap.html) {
       htmlPath = path.join(sessionDir(c.key), `snap-${Date.now()}.html`);
