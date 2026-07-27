@@ -12,6 +12,7 @@ import { startMcpServer } from './mcp-server.ts';
 import { REPO_ROOT } from './repo-root.ts';
 import { runHealth } from './ui-anchors.ts';
 import { PACKAGE_VERSION } from './package-meta.ts';
+import { decodeConsent } from './cli-flags.ts';
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -168,17 +169,15 @@ async function main(): Promise<void> {
       break;
     }
     case 'files-delete': {
-      // `--yes` takes no value, but parseFlags is generic: in
-      // `files-delete --yes name.html` it swallows the filename as the flag's
-      // value. Push it back rather than failing with a bogus Usage error.
-      if (typeof flags.yes === 'string') {
-        flags._.unshift(flags.yes);
-        flags.yes = true;
-      }
+      // `--yes` takes no value, but parseFlags is generic: it swallows the
+      // following positional as the flag's value, and `--yes=false` arrives as
+      // a string. decodeConsent owns both cases (see cli-flags.ts). #F2.
+      const { consent, recoveredPositional } = decodeConsent(flags.yes as string | boolean | undefined);
+      if (recoveredPositional !== null) flags._.unshift(recoveredPositional);
       const filename = flags._.join(' ');
       if (!filename) throw new Error('Usage: designer files-delete "<name>.html" [--yes] --key k');
       const c = new DesignerController({ key });
-      if (flags.yes !== true) {
+      if (!consent) {
         const preview = await c.deleteFile(filename, { dryRun: true });
         console.log(JSON.stringify(preview, null, 2));
         console.error(
@@ -597,8 +596,11 @@ before the delete and the delete is ABORTED if that snapshot fails (--snapshot=f
 
 Refusals that guarantee nothing was deleted: not-found, ambiguous (two files share a display
 label — the switcher hides extensions), confirm-mismatch (the product's dialog named a different
-file), menu-unavailable, snapshot-failed, wrong-project, busy. 'unverified' means the click landed
-but the file list could not be read afterwards — re-run the dry run to see the current state.`,
+file), menu-unavailable, snapshot-failed, wrong-project, busy, dialog-stuck, still-present.
+
+Two codes are UNCERTAIN because the confirm click had already landed: 'unverified' (the file list
+could not be read afterwards) and 'outcome-unknown' (something failed after the commit point).
+Re-run the dry run to see the real state before retrying either.`,
 
   projects: `designer projects — list all Claude design projects visible on /design home.
 

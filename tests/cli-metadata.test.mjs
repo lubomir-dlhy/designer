@@ -74,6 +74,6 @@ test('a destructive verb is dry-run by default (files-delete needs --yes)', asyn
   const start = src.indexOf("case 'files-delete':");
   assert.ok(start > 0, 'files-delete case must exist');
   const block = src.slice(start, start + 1400);
-  assert.match(block, /flags\.yes !== true/, 'must gate the destructive path behind --yes');
+  assert.match(block, /if \(!consent\)/, 'must gate the destructive path behind decoded consent');
   assert.match(block, /dryRun: true/, 'the ungated path must be a dry run');
 });
