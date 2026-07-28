@@ -53,6 +53,8 @@ export const MENU_ITEM_DELETE = 'Delete';
 export const MENU_ITEM_DOWNLOAD = 'Download';
 export const DIALOG_BUTTON_CANCEL = 'Cancel';
 export const DIALOG_BUTTON_DELETE = 'Delete';
+/** Popover chrome — present whether or not the popover lists any rows. */
+export const MENU_NEW_BLANK_PAGE = 'New blank page';
 
 export interface SwitcherRow {
   label: string;
@@ -94,7 +96,16 @@ export function clickTriggerExpr(f: Selectors['files']): string {
  */
 export function switcherStateExpr(f: Selectors['files']): string {
   return `(() => {
-    if (document.querySelectorAll(${JSON.stringify(f.switcherRow)}).length > 0) return 'open';
+    const rows = document.querySelectorAll(${JSON.stringify(f.switcherRow)}).length;
+    if (rows > 0) return 'open';
+    // Open-ness must NOT be inferred from the row count alone: a project whose
+    // last file was just deleted has an OPEN popover with zero rows, and calling
+    // that 'closed' made the opener toggle it shut and thrash (each cycle costs
+    // ~2s of sleeps and never recovers). The popover's own chrome is the signal.
+    const chrome = Array.from(document.querySelectorAll('button')).some(
+      (b) => (b.textContent || '').trim() === ${JSON.stringify(MENU_NEW_BLANK_PAGE)}
+    );
+    if (chrome) return 'open-empty';
     return document.querySelector(${JSON.stringify(f.switcherTrigger)}) ? 'closed' : 'no-trigger';
   })()`;
 }
@@ -359,6 +370,37 @@ export interface SettleCounters {
 }
 
 /**
+ * Turn a raw settle observation into a SettleRead.
+ *
+ * This mapping used to live inline in the controller while only the reducer
+ * below was tested — so reclassifying an unreadable read as 'present' passed
+ * every test while reintroducing a false "nothing was deleted" verdict. The
+ * classifier is the half that decides; it belongs next to the reducer.
+ *
+ * `popoverOpen` distinguishes "the list is empty" from "the list is unreadable":
+ * with the last file deleted, zero rows on an OPEN popover is the success
+ * observation, not an inconclusive one.
+ */
+export function classifySettleRead(
+  rows: SwitcherRow[] | null,
+  fileName: string,
+  preCount: number,
+  preLabelCount: number,
+  popoverOpen: boolean
+): SettleRead {
+  if (rows === null) return { kind: 'inconclusive' };
+  if (rows.length === 0) {
+    if (!popoverOpen) return { kind: 'inconclusive' };
+    // Open and empty: a real observation. Only 'gone' if we expected exactly one.
+    return preCount === 1 && preLabelCount === 1 ? { kind: 'gone' } : { kind: 'other' };
+  }
+  const stillThere = matchingRowIndexes(rows, fileName).length;
+  if (rows.length === preCount - 1 && stillThere === preLabelCount - 1) return { kind: 'gone' };
+  if (rows.length === preCount && stillThere === preLabelCount) return { kind: 'present' };
+  return { kind: 'other' };
+}
+
+/**
  * Fold one settle observation into the counters.
  *
  * Both claims require TWO CONSECUTIVE supporting reads, and an inconclusive read
@@ -375,5 +417,13 @@ export function foldSettleRead(c: SettleCounters, read: SettleRead): SettleCount
     case 'inconclusive':
     case 'other':
       return { consecutive: 0, presentStreak: 0 };
+    default: {
+      // Total by construction: an unknown kind returned `undefined`, and the
+      // NEXT fold threw a TypeError that escaped the declared result union —
+      // after an irreversible click.
+      const _exhaustive: never = read;
+      void _exhaustive;
+      return { consecutive: 0, presentStreak: 0 };
+    }
   }
 }

@@ -14,6 +14,22 @@ const raw = fs.readFileSync(path.join(REPO_ROOT, 'designer-controller.ts'), 'utf
 const stripComments = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const src = stripComments(raw);
 
+/**
+ * Slice between two landmarks, THROWING if either is missing.
+ *
+ * `indexOf` returning -1 makes `slice(a, -1)` run to end-of-file, which turned
+ * one of these tests into a 47k-character no-op that still passed — after the
+ * comment-stripper deleted the doc-comment it was slicing on. A landmark that
+ * moved must fail the test, not silently widen it.
+ */
+function between(text, startMark, endMark) {
+  const a = text.indexOf(startMark);
+  assert.ok(a >= 0, `slice landmark not found: ${startMark}`);
+  const b = text.indexOf(endMark, a + startMark.length);
+  assert.ok(b > a, `slice end landmark not found after start: ${endMark}`);
+  return text.slice(a, b);
+}
+
 // The lock's three load-bearing properties. Each is asserted structurally
 // because the behaviour needs a live browser; the acquire/release arithmetic
 // itself is unit-tested in controller-lock.acquire.test.mjs.
@@ -28,7 +44,7 @@ test('the lock resource is the SESSION (the active tab), not the key or the proj
 test('re-entrancy is per async OPERATION, not per controller instance', () => {
   // The single implementation lives in the standalone withTabLock; the
   // controller delegates to it (asserted separately).
-  const body = src.slice(src.indexOf('export async function withTabLock'), src.indexOf('export class DesignerController'));
+  const body = between(src, 'export async function withTabLock', 'export class DesignerController');
   assert.match(body, /LOCK_CTX\.getStore\(\)/, 're-entrancy is decided from the async context');
   assert.match(body, /LOCK_CTX\.run\(/, 'the held set is propagated to nested calls');
   // An instance flag would let two concurrent calls on ONE controller both
@@ -48,13 +64,30 @@ const MUTATION_OK = {
   sendPrompt: 'thin private-ish wrapper over _submitPrompt, same callers',
   _clickButtonByText: 'private helper; only reached from locked bodies',
   _waitForInterstitialClear: 'private; reached from clearInterstitials body',
-  snapshotFile: 'IS the locked compound entry point',
-  deleteFile: 'takes the lock via its own busy pre-check + _withExclusive',
-  iterate: 'wrapped',
-  ask: 'wrapped'
+  // NOTE: no entry here may mean "this method takes the lock" — that must be
+  // ASSERTED, not exempted. Removing the lock from snapshotFile/iterate/ask/
+  // deleteFile used to keep the suite green precisely because they were listed.
 };
 
-const MUTATORS = /openGuarded\(|browser\.open\(|activateTab\(|browser\.click\(|browser\.clickAt\(|browser\.hover\(|browser\.press\(|browser\.fill\(|browser\.type\(/;
+// Inverted on purpose: enumerating MUTATORS meant every facade method someone
+// forgot (browser.close, browser.reload, run(['open',…]), an evalValue that
+// clicks) was invisible. Enumerate the small, stable READ-ONLY surface instead,
+// and treat every other browser call — plus navigation and in-page clicks — as a
+// mutation.
+const READ_ONLY_BROWSER = new Set([
+  'url', 'title', 'tabs', 'cookies', 'snapshot', 'snapshotText', 'getText',
+  'getAttr', 'getHtml', 'isVisible', 'waitFor', 'waitLoad', 'screenshot', 'eval', 'evalValue'
+]);
+function mutatesTab(body) {
+  if (/openGuarded\(|activateTab\(/.test(body)) return true;
+  // An evalValue that clicks is still a mutation, however it is dressed up.
+  if (/evalValue\([^)]*click|clickTriggerExpr\(|\.click\(\)/.test(body)) return true;
+  for (const m of body.matchAll(/\bbrowser\.([A-Za-z_][A-Za-z0-9_]*)\(/g)) {
+    if (!READ_ONLY_BROWSER.has(m[1])) return true;
+  }
+  return /\brun\(\[\s*'(open|click|hover|press|fill|type|reload|close|mouse|tab)'/.test(body);
+}
+const MUTATORS = { test: mutatesTab };
 
 /** Split the controller class into (methodName -> body) by top-level members. */
 function methodBodies(source) {
@@ -73,16 +106,25 @@ test('every method that mutates the tab either locks or is explicitly exempt', (
   const offenders = [];
   for (const [name, body] of Object.entries(bodies)) {
     if (!MUTATORS.test(body)) continue;
-    if (name in MUTATION_OK) continue;
+    if (Object.prototype.hasOwnProperty.call(MUTATION_OK, name)) continue;
     // A body that IS the implementation behind a wrapper is fine — the wrapper
     // holds the lock. Those are named _xxxBody by convention.
     if (/^_.*Body$/.test(name)) {
       const verb = name.replace(/^_/, '').replace(/Body$/, '');
-      if (new RegExp(`_withExclusive\\('${verb}'`).test(src)) continue;
-      offenders.push(`${name} (no _withExclusive('${verb}') wrapper)`);
+      // Containment, not existence: the wrapper named `verb` must itself take
+      // the lock AND call this body. A file-wide substring match let the string
+      // live at any other call site while the public verb ran unlocked.
+      const wrapper = bodies[verb];
+      if (
+        wrapper &&
+        new RegExp(`_withExclusive\\('${verb}'`).test(wrapper) &&
+        new RegExp(`this\\._${verb}Body\\(`).test(wrapper)
+      )
+        continue;
+      offenders.push(`${name} (no ${verb}() wrapper that locks and calls it)`);
       continue;
     }
-    if (new RegExp(`_withExclusive\\('${name}'`).test(src)) continue;
+    if (new RegExp(`_withExclusive\\('${name}'`).test(bodies[name] ?? '')) continue;
     offenders.push(name);
   }
   assert.deepEqual(
@@ -93,31 +135,39 @@ test('every method that mutates the tab either locks or is explicitly exempt', (
 });
 
 test('status stays lock-free — it is documented as safe to call at any time', () => {
-  const body = src.slice(src.indexOf('async session(opts:'), src.indexOf('async ensureReady()'));
+  const body = between(src, 'async session(opts:', 'async ensureReady()');
   assert.match(body, /=== 'status'\) return this\._sessionBody/, "action='status' must bypass the lock");
   // …and it must be genuinely read-only, or bypassing the lock reopens a
   // navigation escape.
-  const status = src.slice(src.indexOf('async getStatus()'), src.indexOf('private async detectAwaitingClarification'));
+  const status = between(src, 'async getStatus()', 'private async detectAwaitingClarification');
   assert.match(status, /_scrapeVisibleFiles/, 'getStatus must not call the navigating listFiles');
   assert.ok(!/openGuarded|this\.listFiles\(/.test(status), 'getStatus must not navigate');
 });
 
 test('the commit boundary begins at the first dispatch, not at actuate()s return', () => {
-  const body = stripComments(raw.slice(raw.indexOf('const actuate = async'), raw.indexOf('--- RESOLVE')));
+  const body = stripComments(between(raw, 'const actuate = async', '--- RESOLVE'));
   assert.match(body, /dispatched: boolean/, 'actuate reports whether it issued a click');
-  // Every click site must mark dispatched BEFORE issuing.
-  const clicks = [...body.matchAll(/dispatched = true;\s*\n\s*(await )?(this\.browser\.click|const res)/g)];
-  assert.ok(clicks.length >= 2, 'each dispatch path marks dispatched before clicking');
+  // COMPLETENESS, not a count: `>= 2` passed with two of the four sites deleted.
+  // Every click issued anywhere in actuate must be preceded by the flag.
+  const clickSites = [...body.matchAll(/this\.browser\.(click|clickAt)\(|e\.click\(\)/g)];
+  assert.ok(clickSites.length >= 3, `expected actuate to have several click sites, found ${clickSites.length}`);
+  for (const m of clickSites) {
+    const before = body.slice(Math.max(0, m.index - 260), m.index);
+    assert.match(before, /dispatched = true;/, `click site at ${m.index} is not preceded by dispatched = true`);
+  }
 });
 
 test('the settle uses the shared counter reducer rather than ad-hoc arithmetic', () => {
   // The arithmetic itself is unit-tested in files-switcher.settle.test.mjs;
   // this only proves the controller routes through it.
   // Slice by the comment landmarks in RAW source, then strip comments inside it.
-  const body = stripComments(raw.slice(raw.indexOf('POSITIVE SETTLE'), raw.indexOf('POST-SUCCESS')));
-  assert.match(body, /foldSettleRead\(/, 'every settle observation goes through the reducer');
+  const body = stripComments(between(raw, 'POSITIVE SETTLE', 'POST-SUCCESS'));
+  assert.match(body, /classifySettleRead\(/, 'the observation is classified by the tested classifier');
+  assert.match(body, /foldSettleRead\(/, 'every observation goes through the reducer');
   assert.match(body, /counters\.consecutive >= 2/, 'success needs two consecutive reads');
-  assert.match(body, /counters\.presentStreak >= 2/, 'still-present needs two consecutive reads too');
+  // Each poll must be a fresh MOUNT, or "consecutive reads" are re-reads of one
+  // stale subtree — which is how a deleted file kept reading as present.
+  assert.match(body, /closeSwitcher\(\)[\s\S]{0,200}openSwitcher\(\)/, 'each settle read remounts the popover');
   assert.ok(!/sawTargetPresent/.test(body), 'the single-read latch is gone');
 });
 

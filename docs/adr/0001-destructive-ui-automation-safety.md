@@ -52,9 +52,10 @@ independent of how a click is dispatched:
    change — for deletion, the row set shrinking by exactly one across two
    consecutive reads. Absence of evidence is never success: rows exist only
    while the popover is open, so an unreadable list is uncertainty, not `ok`.
-   The negative claim is held to the same bar — "the file is still there" also
-   needs two consecutive reads, or it is reported as uncertain rather than as a
-   clean refusal.
+   Each observation must also be a fresh one: the popover is remounted per poll,
+   because an opener that no-ops when already open turns N polls into N re-reads
+   of one stale subtree. And the negative claim was dropped entirely — see the
+   consequences below.
 
 Given those, the click mechanism is a *reliability* concern, free to be layered:
 trusted click first, then dismiss the covering scrim and retry, then a synthetic
@@ -101,10 +102,11 @@ Positive:
 - The flow survives both failure modes observed live (dead trusted clicks,
   uncloseable scrims) without weakening any guarantee.
 - Refusal codes split on whether a confirm click was ever **dispatched**, not on
-  whether one was observed to work. Codes issued before any dispatch guarantee
-  nothing was deleted; `still-present` is post-dispatch positive evidence the
-  file survived; `unverified` and `outcome-unknown` say plainly that the outcome
-  is unknown rather than guessing at it.
+  whether one was observed to work. Before any dispatch, a code guarantees
+  nothing was deleted. After one, there is exactly one failure code —
+  `outcome-unknown` — because the only evidence that the file survived would be
+  the file list, and that surface lags the delete. A destructive tool may prove
+  success or admit ignorance; it may not claim safety from a laggy read.
 - The pattern generalizes to the rename/duplicate/download verbs on the same
   surface, and to project deletion if it is ever productionized.
 

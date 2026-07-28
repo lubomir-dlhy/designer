@@ -39,6 +39,7 @@ import {
   stampedSelector,
   matchingRowIndexes,
   foldSettleRead,
+  classifySettleRead,
   type SettleCounters,
   displayLabelFor,
   STAMP_MENU_DELETE,
@@ -56,11 +57,16 @@ export interface ChatTurn {
 /**
  * Why a delete refused.
  *
- * Every code means NOTHING WAS DELETED **except** the two uncertain ones:
- * `unverified` (the click landed but the file list could not be read) and
- * `outcome-unknown` (something failed after the confirm click may have
- * committed). Codes are never reused across that boundary — once the
- * irreversible click is dispatched, no pre-click code can be returned. #F4.
+ * Every code means NOTHING WAS DELETED **except** `outcome-unknown`, which is
+ * returned for every unproven outcome once a confirm click has been dispatched.
+ *
+ * There is deliberately no post-dispatch code asserting the file survived. The
+ * only evidence for that would be the file list, which is the soft virtualized
+ * surface this repo treats as corroboration only — it lags the delete, so "the
+ * row is still there" cannot outrank "Delete was clicked and the dialog
+ * closed". After a dispatch the outcome is PROVEN gone or UNKNOWN. #F4, and the
+ * round-4 disconfirmation that showed the two-consecutive-reads bar was being
+ * cleared by repeated reads of a single stale popover mount.
  */
 export type DeleteFileError =
   | 'busy'
@@ -73,8 +79,6 @@ export type DeleteFileError =
   | 'dialog-stuck'
   | 'snapshot-failed'
   | 'project-changed'
-  | 'still-present'
-  | 'unverified'
   | 'outcome-unknown';
 
 export type DeleteFileResult =
@@ -2022,6 +2026,11 @@ export class DesignerController {
       }
 
       // --- POSITIVE SETTLE ---
+      // Each poll must be a fresh OBSERVATION, not a fresh timestamp. The opener
+      // early-returns when the popover is already open, so without closing it
+      // first every later poll re-read the same mounted DOM subtree — measured
+      // as ~1 real observation per 15 of the "two consecutive reads" the verdict
+      // was built on. Close, reopen, then read.
       const deadline = Date.now() + 15_000;
       let counters: SettleCounters = { consecutive: 0, presentStreak: 0 };
       let lastGoodRows: SwitcherRow[] | null = null;
@@ -2030,56 +2039,16 @@ export class DesignerController {
         if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
           return unknown('the tab navigated away from the project during the settle');
         }
-        await openSwitcher();
-        const rows = await readRows();
-        // openSwitcher can sleep >1s, so re-assert AFTER the read: rows sampled
-        // from another project must never feed the settle.
+        await closeSwitcher();
+        const state = await openSwitcher();
+        const rows = state === 'open' || state === 'open-empty' ? await readRows() : null;
         if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
           return unknown('the tab navigated away while the file list was being read');
         }
-        // Inconclusive: the popover is shut or unreadable. Counts toward
-        // NEITHER success nor failure — an empty read is exactly what a
-        // never-happened delete looks like.
-        if (!rows || rows.length === 0) {
-          // Breaks BOTH streaks — see foldSettleRead.
-          counters = foldSettleRead(counters, { kind: 'inconclusive' });
-          continue;
-        }
-        const stillThere = matchingRowIndexes(rows, fileName).length;
-        const gone = rows.length === preCount - 1 && stillThere === preLabelCount - 1;
-        const present = rows.length === preCount && stillThere === preLabelCount;
-        counters = foldSettleRead(counters, { kind: gone ? 'gone' : present ? 'present' : 'other' });
-        if (gone) lastGoodRows = rows;
+        const read = classifySettleRead(rows, fileName, preCount, preLabelCount, state === 'open' || state === 'open-empty');
+        counters = foldSettleRead(counters, read);
+        if (read.kind === 'gone') lastGoodRows = rows ?? [];
         if (counters.consecutive >= 2) break;
-      }
-
-      if (counters.consecutive < 2 || !lastGoodRows) {
-        // 'still-present' is positive evidence the file survived (we read the
-        // list and it was there). Anything else after the commit boundary is
-        // genuinely unknown.
-        // 'still-present' is a POST-CLICK claim, and it only holds when the row
-        // was read as present on two consecutive settled reads — the same bar
-        // success has to clear.
-        if (counters.presentStreak >= 2) {
-          return {
-            ok: false,
-            error: 'still-present',
-            file: fileName,
-            detail: 'the row was still listed on consecutive reads after the click — the deletion did not take',
-            snapshotPath
-          };
-        }
-        // Narrow, still-uncertain case: the click was dispatched and the list
-        // could not be read at all. Kept distinct from outcome-unknown so the
-        // union has no member that nothing produces.
-        return {
-          ok: false,
-          error: 'unverified',
-          file: fileName,
-          detail:
-            'the confirm click was dispatched but the file list could not be read afterwards — the file MAY be deleted; re-run with dryRun',
-          snapshotPath
-        };
       }
 
       // --- POST-SUCCESS ---
@@ -2125,7 +2094,7 @@ export class DesignerController {
         dryRun: false,
         file: fileName,
         deletedLabel: displayLabelFor(fileName),
-        remainingLabels: lastGoodRows.map((r) => r.label),
+        remainingLabels: (lastGoodRows ?? []).map((r) => r.label),
         snapshotPath,
         activeFileReset,
         ...(warnings.length ? { warnings } : {})
@@ -2526,7 +2495,12 @@ export class DesignerController {
     );
   }
 
+  /** Closes the browser session — the most destructive tab mutation there is. */
   async close(): Promise<void> {
+    return this._withExclusive('close', () => this._closeBody());
+  }
+
+  private async _closeBody(): Promise<void> {
     await this.browser.close().catch(() => null);
   }
 }

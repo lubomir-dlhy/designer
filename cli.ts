@@ -125,6 +125,11 @@ async function main(): Promise<void> {
       const filename = flags.file as string | undefined;
       // Single locked operation — see snapshotFile.
       const snap = await c.snapshotFile(filename);
+      if (snap.swap && !snap.swap.ok) {
+        console.error(JSON.stringify({ ok: false, error: snap.swap.error, file: filename }, null, 2));
+        process.exitCode = 1;
+        break;
+      }
       if (snap.url) console.log(`\nTaste here: ${snap.url}\n`);
       console.log(
         JSON.stringify(
@@ -607,9 +612,9 @@ ambiguous (two files share a display label — the switcher hides extensions), c
 (the product's dialog named a different file), menu-unavailable, snapshot-failed, wrong-project,
 busy, switcher-unavailable, dialog-stuck.
 
-After a click was dispatched: 'still-present' means the file was read as still listed on
-consecutive checks, so it survived. 'unverified' and 'outcome-unknown' mean the outcome could NOT
-be proven — re-run the dry run to see the real state before retrying either.
+Once a confirm click is dispatched there is exactly ONE failure code: outcome-unknown. The file
+may or may not be gone, and this command will not guess — the file list lags the delete, so it
+cannot prove the file survived. Re-run the dry run to see the real state before retrying.
 
 A successful delete can still carry warnings (printed to stderr): the file is gone, but some
 cleanup — updating the stored session, or navigating off the deleted file — did not complete.`,
