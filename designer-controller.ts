@@ -1628,6 +1628,9 @@ export class DesignerController {
    *    the node that gets clicked (no verify-here / click-there gap).
    *  - TRUSTED INPUT. Hover + clicks go through the facade (real CDP input);
    *    synthetic element.click() silently no-ops on some of these menus.
+   * Full reasoning, and the alternatives that were refuted live:
+   * docs/adr/0001-destructive-ui-automation-safety.md
+   *
    *  - POSITIVE SETTLE. Rows exist only while the popover is open, so "no rows"
    *    is NOT proof of deletion. Success requires the row set to shrink by
    *    exactly one; empty/unreadable reads are inconclusive and cap out as

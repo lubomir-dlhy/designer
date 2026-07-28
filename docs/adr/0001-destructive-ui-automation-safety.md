@@ -97,6 +97,28 @@ Framing safety as verification also degrades honestly under UI drift: when the
 product renames a button or restyles a dialog, the flow refuses and says why,
 rather than clicking something plausible.
 
+## The transferable part
+
+If you are adding a sibling verb on this surface, or reviewing one, these are
+the rules that span files and are therefore easy to violate one file at a time:
+
+1. **Exclusion belongs to the shared resource, not to the object holding a
+   handle on it.** The resource is the agent-browser session's active tab. Three
+   attempts got this wrong — per controller instance, then per session+project,
+   then leaking through a public `browser` field into the health path.
+2. **A laggy read may never prove safety.** After an irreversible dispatch the
+   outcome is proven-done or unknown. Never "it is still listed, so nothing
+   happened".
+3. **The commit boundary starts at attempted actuation**, not at a successful
+   observation of it. "The dialog was not seen closing" is not "no click was
+   issued".
+4. **Positive and negative claims need symmetric evidence**, and each
+   observation must be independent — a re-read of the same DOM nodes is one
+   observation, however many times it is polled.
+5. **A syntactic check is not proof.** Every guard here is verified by a
+   mutation in `tests/mutation-harness.mjs`; a mutation that survives names a
+   property that is asserted but not verified.
+
 ## Consequences
 
 Positive:

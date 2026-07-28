@@ -192,3 +192,17 @@ test('there is ONE lock implementation, not a controller copy and a standalone c
   assert.equal(impls.length, 1, 'a second acquire path would drift from the first');
   assert.match(src.slice(src.indexOf('private async _withExclusive')), /return withTabLock\(/, 'the controller delegates');
 });
+
+// A decision record nobody can find is not a record. This repo keeps rationale
+// in code comments, so a separate doc only earns its place if the code and the
+// README point at it — and it drifted from the shipped union once already.
+test('ADR 0001 is reachable from the code and the README it governs', async () => {
+  const adr = 'docs/adr/0001-destructive-ui-automation-safety.md';
+  assert.ok(fs.existsSync(path.join(REPO_ROOT, adr)), 'the ADR exists');
+  const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+  assert.match(readme, /docs\/adr\/0001/, 'README links the ADR — it is the only shipped doc');
+  for (const f of ['files-switcher.ts', 'designer-controller.ts']) {
+    const source = fs.readFileSync(path.join(REPO_ROOT, f), 'utf8');
+    assert.match(source, /docs\/adr\/0001/, `${f} points at the ADR at the point of use`);
+  }
+});

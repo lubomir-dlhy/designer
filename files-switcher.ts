@@ -22,6 +22,9 @@ import type { Selectors } from './selectors.ts';
 //      click lands on the very node the assertion just checked. Verify-here /
 //      click-there is the failure mode that deletes the wrong file.
 //
+// WHY this is shaped this way — including the approaches tried and refuted
+// against the live product — is docs/adr/0001-destructive-ui-automation-safety.md.
+//
 // Actuation rule: expressions here READ and STAMP. The one exception is
 // `clickTriggerExpr`, a synthetic OPENER fallback for the popover — needed
 // because trusted clicks silently no-op on some page states. A synthetic click
