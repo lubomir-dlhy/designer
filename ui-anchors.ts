@@ -919,8 +919,19 @@ export const UI_ANCHORS: AnchorDef[] = [
     // file-panel.ts reason: a probe with its own copy of the DOM steps can stay
     // green while production silently no-ops (PR #77).
     check: async (b) => {
+      // This anchor runs only in the SESSION phase, i.e. on a project page —
+      // where the trigger is a production-required selector. Skipping on its
+      // absence let the exact drift this probe exists to catch stay green.
+      // Only a page that is not a project surface at all is inconclusive.
       if (!(await hasSelector(b, SEL.files.switcherTrigger))) {
-        return { ok: true, status: 'skip', detail: 'files-switcher trigger absent — no project surface to probe' };
+        const onProject = /\/design\/p\/[a-f0-9-]+/i.test(await b.url().catch(() => ''));
+        if (!onProject) {
+          return { ok: true, status: 'skip', detail: 'not on a project page — no switcher surface to probe' };
+        }
+        return {
+          ok: false,
+          detail: `files-switcher trigger (${SEL.files.switcherTrigger}) is absent on a project page — deleteFile and designer_files_delete cannot run`
+        };
       }
 
       let entryCount = -1;

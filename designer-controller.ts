@@ -1690,13 +1690,22 @@ export class DesignerController {
     // (a synthetic open strands the row menu's scrim above the confirm dialog).
     const switcherState = async (): Promise<string> =>
       (await this.browser.evalValue<string>(switcherStateExpr(F)).catch(() => 'error')) || 'error';
-    const openSwitcher = async (): Promise<string> => {
+    // Reports whether the popover was actually RE-MOUNTED (we found it closed
+    // and opened it) as well as its state. Zero-row reads cannot carry the node
+    // stamp, so for the last-file case this is the only independence signal
+    // there is: without it, one mounted empty popover supplies two apparently
+    // fresh 'gone' observations.
+    const openSwitcherTracked = async (): Promise<{ state: string; remounted: boolean }> => {
       let st = await switcherState();
-      if (st !== 'closed') return st;
+      if (st !== 'closed') return { state: st, remounted: false };
+      const st2 = await openFromClosed();
+      return { state: st2, remounted: true };
+    };
+    const openFromClosed = async (): Promise<string> => {
       // Trusted click first — it leaves the cleanest overlay state.
       await this.browser.click(F.switcherTrigger).catch(() => null);
       await sleep(700);
-      st = await switcherState();
+      let st = await switcherState();
       if (st !== 'closed') return st;
       // …but on some page states every trusted variant reports success and
       // does nothing (live 2026-07-26). Fall back to the synthetic open; the
@@ -1705,11 +1714,17 @@ export class DesignerController {
       await sleep(800);
       return switcherState();
     };
+    const openSwitcher = async (): Promise<string> => (await openSwitcherTracked()).state;
     const closeSwitcher = async () => {
-      if ((await switcherState()) !== 'open') return;
+      // 'open-empty' is open too. Treating it as already-closed left the last
+      // file's popover mounted across polls, which is exactly how two reads of
+      // one mount looked independent.
+      const st = await switcherState();
+      if (st !== 'open' && st !== 'open-empty') return;
       await this.browser.click(F.switcherTrigger).catch(() => null);
       await sleep(400);
-      if ((await switcherState()) === 'open') await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
+      const after = await switcherState();
+      if (after === 'open' || after === 'open-empty') await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
     };
     const clearStamps = async () => {
       await this.browser.evalValue(clearStampsExpr()).catch(() => null);
@@ -1751,6 +1766,11 @@ export class DesignerController {
       const trusted = async (): Promise<void> => {
         const hit = (await this.browser.evalValue<string>(hitTestStatusExpr(sel)).catch(() => 'error')) || 'error';
         if (hit === 'hittable') {
+          // Revalidate here too. The window is short — the caller's root guard
+          // fires immediately before — but "checked before EVERY dispatch" has
+          // to be true of every dispatch, including the fast one, or the claim
+          // is prose. One extra eval on a destructive path is cheap.
+          if (revalidate && !(await revalidate())) return;
           dispatched = true;
           await this.browser.click(sel).catch(() => null);
           return;
@@ -2070,7 +2090,7 @@ export class DesignerController {
           return unknown('the tab navigated away from the project during the settle');
         }
         await closeSwitcher();
-        const state = await openSwitcher();
+        const { state, remounted } = await openSwitcherTracked();
         const open = state === 'open' || state === 'open-empty';
         const observed = open ? await readRows() : null;
         if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
@@ -2082,11 +2102,23 @@ export class DesignerController {
           preCount,
           preLabelCount,
           open,
-          observed?.reused ?? false
+          observed?.reused ?? false,
+          remounted
         );
         counters = foldSettleRead(counters, read);
         if (read.kind === 'gone') lastGoodRows = observed?.rows ?? [];
         if (counters.consecutive >= 2) break;
+      }
+
+      // The loop can also exit by DEADLINE. Falling through from there reports
+      // ok:true with no evidence at all — present, reused, unreadable and
+      // malformed reads alike. This guard was lost when the settle block was
+      // rewritten (the replaced span ended at the section marker below, and the
+      // guard sat between the loop and it), and nothing caught it: the e2e's
+      // happy path always breaks out on consecutive >= 2, so the deadline exit
+      // is never taken there.
+      if (counters.consecutive < 2 || !lastGoodRows) {
+        return unknown('the file list never settled into two consistent, independent reads');
       }
 
       // --- POST-SUCCESS ---

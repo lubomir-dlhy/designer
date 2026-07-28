@@ -106,3 +106,25 @@ test('M5: an unknown kind never advances a counter toward a verdict', () => {
     assert.deepEqual(out, { consecutive: 0, presentStreak: 0 }, `kind ${String(kind)} must reset`);
   }
 });
+
+test('P1: an empty list read WITHOUT a real remount is not an observation', () => {
+  // closeSwitcher used to ignore 'open-empty', leaving the last file's popover
+  // mounted across polls — so one mount supplied two apparently fresh 'gone'
+  // reads and success needed no second look.
+  assert.deepEqual(
+    classifySettleRead([], 'only.html', 1, 1, true, false, /* remounted */ false),
+    { kind: 'inconclusive' }
+  );
+  assert.deepEqual(
+    classifySettleRead([], 'only.html', 1, 1, true, false, /* remounted */ true),
+    { kind: 'gone' }
+  );
+});
+
+test('P1: two non-remounted empty reads cannot reach the success bar', () => {
+  let c = { consecutive: 0, presentStreak: 0 };
+  for (let i = 0; i < 5; i++) {
+    c = foldSettleRead(c, classifySettleRead([], 'only.html', 1, 1, true, false, false));
+  }
+  assert.equal(c.consecutive, 0, 'no amount of re-reading one mount proves a deletion');
+});

@@ -167,7 +167,11 @@ test('the settle uses the shared counter reducer rather than ad-hoc arithmetic',
   assert.match(body, /counters\.consecutive >= 2/, 'success needs two consecutive reads');
   // Each poll must be a fresh MOUNT, or "consecutive reads" are re-reads of one
   // stale subtree — which is how a deleted file kept reading as present.
-  assert.match(body, /closeSwitcher\(\)[\s\S]{0,200}openSwitcher\(\)/, 'each settle read remounts the popover');
+  assert.match(body, /closeSwitcher\(\)[\s\S]{0,200}openSwitcherTracked\(\)/, 'each settle read remounts the popover');
+  assert.match(body, /remounted/, 'the read carries whether it followed a real remount');
+  // Falling out of the loop on the DEADLINE is not success. This guard was
+  // deleted once by a block rewrite and nothing caught it.
+  assert.match(body, /counters\.consecutive < 2 \|\| !lastGoodRows/, 'deadline exit must not reach POST-SUCCESS');
   assert.ok(!/sawTargetPresent/.test(body), 'the single-read latch is gone');
 });
 

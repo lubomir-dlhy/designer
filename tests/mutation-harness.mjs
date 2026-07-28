@@ -64,6 +64,30 @@ const MUTATIONS = [
     to: '  async goAnywhere(url: string): Promise<void> {\n    await this.browser.open(url);\n  }\n\n  async currentUrl(): Promise<string> {'
   },
   {
+    id: 'CONTROLLER — the deadline exit falls through to success',
+    file: 'designer-controller.ts',
+    from: "      if (counters.consecutive < 2 || !lastGoodRows) {\n        return unknown('the file list never settled into two consistent, independent reads');\n      }",
+    to: ''
+  },
+  {
+    id: 'CONTROLLER — closeSwitcher ignores an open-empty popover',
+    file: 'designer-controller.ts',
+    from: "      if (st !== 'open' && st !== 'open-empty') return;",
+    to: "      if (st !== 'open') return;"
+  },
+  {
+    id: 'CONTROLLER — the settle stops tracking real remounts',
+    file: 'designer-controller.ts',
+    from: '          remounted\n        );',
+    to: '          true\n        );'
+  },
+  {
+    id: 'HEALTH — a missing switcher trigger is skipped instead of failed',
+    file: 'ui-anchors.ts',
+    from: "        return {\n          ok: false,\n          detail: `files-switcher trigger (${SEL.files.switcherTrigger}) is absent on a project page — deleteFile and designer_files_delete cannot run`\n        };",
+    to: "        return { ok: true, status: 'skip', detail: 'trigger absent' };"
+  },
+  {
     id: 'settle — success no longer requires two consecutive reads',
     file: 'designer-controller.ts',
     from: 'if (counters.consecutive >= 2) break;',

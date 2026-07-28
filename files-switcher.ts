@@ -432,7 +432,14 @@ export function classifySettleRead(
   preCount: number,
   preLabelCount: number,
   popoverOpen: boolean,
-  reusedMount = false
+  reusedMount = false,
+  /**
+   * True only when this read followed an actual closed→open transition.
+   * Zero-row reads carry no node stamp, so for the last-file case this is the
+   * ONLY independence signal: without it, one mounted empty popover supplies
+   * two apparently fresh 'gone' observations and success needs no second look.
+   */
+  remounted = true
 ): SettleRead {
   // A re-read of a subtree we already counted is not new evidence, whatever it
   // says. This is what makes "two consecutive reads" mean two observations.
@@ -440,7 +447,11 @@ export function classifySettleRead(
   if (rows === null || !Array.isArray(rows)) return { kind: 'inconclusive' };
   if (rows.length === 0) {
     if (!popoverOpen) return { kind: 'inconclusive' };
-    // Open and empty: a real observation. Only 'gone' if we expected exactly one.
+    // An empty list read off a popover we did not just remount is a re-read of
+    // the same mount wearing a different hat.
+    if (!remounted) return { kind: 'inconclusive' };
+    // Open, empty and freshly mounted: a real observation. Only 'gone' if we
+    // expected exactly one file.
     return preCount === 1 && preLabelCount === 1 ? { kind: 'gone' } : { kind: 'other' };
   }
   const stillThere = matchingRowIndexes(rows, fileName).length;
