@@ -1208,10 +1208,6 @@ export class DesignerController {
     return withTabLock(this.browser, `${name}[${this.key}]`, fn);
   }
 
-  /** The operation currently driving this controller's tab, or null. */
-  get busyWith(): string | null {
-    return this._busyHolder();
-  }
 
   async _ensureInSession(): Promise<void> {
     await this.ensureReady();
@@ -1634,7 +1630,7 @@ export class DesignerController {
    *  - POSITIVE SETTLE. Rows exist only while the popover is open, so "no rows"
    *    is NOT proof of deletion. Success requires the row set to shrink by
    *    exactly one; empty/unreadable reads are inconclusive and cap out as
-   *    'unverified' rather than a false ok.
+   *    'outcome-unknown' rather than a false ok.
    */
   async deleteFile(
     fileName: string,

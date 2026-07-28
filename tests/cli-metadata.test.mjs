@@ -77,3 +77,13 @@ test('a destructive verb is dry-run by default (files-delete needs --yes)', asyn
   assert.match(block, /if \(!consent\)/, 'must gate the destructive path behind decoded consent');
   assert.match(block, /dryRun: true/, 'the ungated path must be a dry run');
 });
+
+// This is a public package. A harness that creates and deletes real user
+// projects has no business inside it, however well gated.
+test('the destructive e2e harness is not published', async () => {
+  const cfg = JSON.parse(await readFile(path.join(root, 'tsconfig.build.json'), 'utf8'));
+  assert.ok(
+    (cfg.exclude ?? []).some((p) => /e2e/.test(p)),
+    'the build must exclude the e2e harness so it never reaches dist/ (and therefore npm)'
+  );
+});

@@ -411,7 +411,7 @@ export type SettleRead =
 
 export interface SettleCounters {
   consecutive: number;   // consecutive 'gone' reads -> success at 2
-  presentStreak: number; // consecutive 'present' reads -> still-present at 2
+  presentStreak: number; // consecutive 'present' reads (evidence, never a clean verdict)
 }
 
 /**
@@ -452,10 +452,12 @@ export function classifySettleRead(
 /**
  * Fold one settle observation into the counters.
  *
- * Both claims require TWO CONSECUTIVE supporting reads, and an inconclusive read
- * breaks BOTH streaks. Resetting only the success counter is what let
- * 'still-present' — a "nothing was deleted" verdict returned after an
- * irreversible click — be satisfied by two reads separated by an unreadable one.
+ * Both streaks require TWO CONSECUTIVE supporting reads, and an inconclusive
+ * read breaks BOTH. Resetting only the success counter once let a
+ * "nothing was deleted" verdict be satisfied by two reads separated by an
+ * unreadable one — that verdict has since been removed entirely, because a
+ * laggy read cannot support one, but the symmetry is kept: `presentStreak` is
+ * evidence for the caller, never a clean claim.
  */
 export function foldSettleRead(c: SettleCounters, read: SettleRead): SettleCounters {
   switch (read.kind) {
