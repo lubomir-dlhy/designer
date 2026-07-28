@@ -173,6 +173,26 @@ test('the lock-free status scrape is re-attributed, not trusted', () => {
   const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
   const body = src.slice(src.indexOf('async getStatus()'), src.indexOf('private async detectAwaitingClarification'));
   assert.match(body, /rootAfter/, 'the project root is re-read AFTER the scrape');
-  assert.match(body, /if \(rootAfter === targetRoot\) availableFiles = scraped;/, 'the read is kept only if it can be attributed');
+  assert.match(body, /if \(rootAfter === targetRoot\) \{/, 'the reads are kept only if they can be attributed');
   assert.match(body, /raced/, 'a discarded read is reported as raced, not as visible-only');
+});
+
+test('the dry run discloses that it matched a LABEL, not a filename', () => {
+  // Labels hide extensions: index.html and index.css both show as "index". A
+  // preview that matched one and reported plain success would promise more than
+  // it checked — the real delete verifies the full name at the confirm dialog.
+  const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
+  const dry = src.slice(src.indexOf('if (dryRun)'), src.indexOf('// --- SNAPSHOT'));
+  assert.match(dry, /filenameVerified: false/, 'the preview states the name was not verified');
+  assert.match(dry, /hides the extension/, 'and says why, in the payload the agent reads');
+});
+
+test('both status page-reads are gated and attributed together', () => {
+  // Fixing the file scrape alone left awaitingClarification reading another
+  // project's chat — the same defect one field over.
+  const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  const body = src.slice(src.indexOf('async getStatus()'), src.indexOf('private async detectAwaitingClarification'));
+  assert.match(body, /const clarifying = await this\.detectAwaitingClarification\(\)/, 'the chat read is inside the gate');
+  assert.match(body, /availableFiles = scraped;\s*\n\s*awaitingClarification = clarifying;/, 'both are attributed together');
+  assert.ok(!/inSession \? await this\.detectAwaitingClarification/.test(body), 'the ungated read is gone');
 });

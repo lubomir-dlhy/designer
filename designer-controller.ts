@@ -96,7 +96,25 @@ export type DeleteFileResult =
       /** Non-fatal cleanup/bookkeeping problems AFTER a proven deletion. */
       warnings?: string[];
     }
-  | { ok: true; dryRun: true; file: string; wouldDelete: string | null; ambiguous: boolean; rows: string[] }
+  | {
+      ok: true;
+      dryRun: true;
+      file: string;
+      /** The switcher LABEL that matched — extensions are not shown there. */
+      wouldDelete: string | null;
+      ambiguous: boolean;
+      rows: string[];
+      /**
+       * False always: a preview matches on the display label, and the label
+       * hides the extension. `index.html` and `index.css` share the label
+       * `index`, so a dry run cannot tell them apart. Only the confirm dialog
+       * names the full filename, and reaching it means opening a destructive
+       * dialog — which a preview must not do. The real delete verifies the name
+       * there and refuses with 'confirm-mismatch' if it differs.
+       */
+      filenameVerified: false;
+      note: string;
+    }
   | {
       ok: false;
       error: DeleteFileError;
@@ -386,12 +404,22 @@ export class DesignerController {
     // or discard it; never label a racing read 'visible-only'. Codex review,
     // PR #134.
     let availableFiles: string[] = [];
+    let awaitingClarification = false;
     let raced = false;
     if (inSession && onThisKeysProject) {
+      // BOTH page reads are gated and attributed together. Fixing only the file
+      // scrape left its sibling reading another project's last chat turn and
+      // reporting it as this key's awaitingClarification — the same defect, one
+      // field over. Codex review, PR #134.
       const scraped = await this._scrapeVisibleFiles();
+      const clarifying = await this.detectAwaitingClarification();
       const rootAfter = (await this.currentUrl()).split('?')[0];
-      if (rootAfter === targetRoot) availableFiles = scraped;
-      else raced = true;
+      if (rootAfter === targetRoot) {
+        availableFiles = scraped;
+        awaitingClarification = clarifying;
+      } else {
+        raced = true;
+      }
     }
     // The list is whatever the page is currently showing: it is empty both for a
     // project with no files and for one whose file panel is closed. Callers that
@@ -403,7 +431,6 @@ export class DesignerController {
         : raced
           ? 'raced'
           : 'visible-only';
-    const awaitingClarification = inSession ? await this.detectAwaitingClarification() : false;
     return {
       key: this.key,
       stored,
@@ -1887,7 +1914,16 @@ export class DesignerController {
     if (dryRun) {
       const rows = resolved.rows.map((r) => r.label);
       await closeSwitcher();
-      return { ok: true, dryRun: true, file: fileName, wouldDelete: rows[resolved.matches[0]!] ?? null, ambiguous: false, rows };
+      return {
+        ok: true,
+        dryRun: true,
+        file: fileName,
+        wouldDelete: rows[resolved.matches[0]!] ?? null,
+        ambiguous: false,
+        rows,
+        filenameVerified: false,
+        note: `matched on the switcher label ${JSON.stringify(rows[resolved.matches[0]!] ?? '')}, which hides the extension — a different file sharing that label would also match here. The delete itself verifies the full name against the confirm dialog and refuses with 'confirm-mismatch' if it differs.`
+      };
     }
 
     // --- SNAPSHOT (blocking precondition; there is no undo) ---

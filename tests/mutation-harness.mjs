@@ -94,6 +94,18 @@ const MUTATIONS = [
     to: '      availableFiles = scraped;'
   },
   {
+    id: 'STATUS — the clarification read is not gated with the file scrape',
+    file: 'designer-controller.ts',
+    from: '        awaitingClarification = clarifying;',
+    to: ''
+  },
+  {
+    id: 'DRY-RUN — the preview stops disclosing that the name is unverified',
+    file: 'designer-controller.ts',
+    from: '        filenameVerified: false,\n        note:',
+    to: '        note:'
+  },
+  {
     id: 'HEALTH — a missing switcher trigger is skipped instead of failed',
     file: 'ui-anchors.ts',
     from: "        return {\n          ok: false,\n          detail: `files-switcher trigger (${SEL.files.switcherTrigger}) is absent on a project page — deleteFile and designer_files_delete cannot run`\n        };",
