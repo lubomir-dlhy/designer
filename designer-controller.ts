@@ -115,6 +115,13 @@ export interface SessionStatus {
   inSession: boolean;
   onHome: boolean;
   availableFiles: string[];
+  /**
+   * How much `availableFiles` is worth. 'visible-only' = scraped from the page
+   * without navigating, so an empty array may mean "panel closed", not "no
+   * files"; 'other-project' = the shared tab is on a different project, so the
+   * list is deliberately empty; 'not-in-session' = no project open.
+   */
+  filesScope: 'visible-only' | 'other-project' | 'not-in-session';
   // True when the latest turn is Claude punting with the "Claude has some questions →"
   // teaser. The questions UI itself is ephemeral — it disappears on refresh and has no
   // stable DOM contract — so we don't try to scrape and answer them. Caller should
@@ -361,7 +368,23 @@ export class DesignerController {
     // that silently reports "no files" is worse than one that reports what is
     // actually on screen, and designer_session status is documented as a pure
     // read that is safe to call at any time. Review of e038462.
-    const availableFiles = inSession ? await this._scrapeVisibleFiles() : [];
+    // Scope the read to THIS key's project. Dropping listFiles() also dropped
+    // the pin it carried ("Navigate to THIS key's project; being in any /p/
+    // session isn't enough"), so a status call could report whatever project the
+    // shared tab happened to be on as this key's inventory. We cannot navigate
+    // here — status must stay lock-free — so we report only when the tab is
+    // already on the right project, and say so when it is not.
+    const targetRoot = stored?.designUrl?.split('?')[0];
+    const onThisKeysProject = !!targetRoot && url.split('?')[0] === targetRoot;
+    const availableFiles = inSession && onThisKeysProject ? await this._scrapeVisibleFiles() : [];
+    // The list is whatever the page is currently showing: it is empty both for a
+    // project with no files and for one whose file panel is closed. Callers that
+    // need an authoritative answer must use designer_list / handoff.
+    const filesScope: SessionStatus['filesScope'] = !inSession
+      ? 'not-in-session'
+      : !onThisKeysProject
+        ? 'other-project'
+        : 'visible-only';
     const awaitingClarification = inSession ? await this.detectAwaitingClarification() : false;
     return {
       key: this.key,
@@ -370,6 +393,7 @@ export class DesignerController {
       inSession,
       onHome: /\/design\/?$/.test(url) || url.endsWith('/design'),
       availableFiles,
+      filesScope,
       awaitingClarification
     };
   }
