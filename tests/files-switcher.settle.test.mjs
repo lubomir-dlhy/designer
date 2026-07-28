@@ -173,7 +173,7 @@ test('the lock-free status scrape is re-attributed, not trusted', () => {
   const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
   const body = src.slice(src.indexOf('async getStatus()'), src.indexOf('private async detectAwaitingClarification'));
   assert.match(body, /rootAfter/, 'the project root is re-read AFTER the scrape');
-  assert.match(body, /if \(rootAfter === targetRoot\) \{/, 'the reads are kept only if they can be attributed');
+  assert.match(body, /if \(rootAfter === targetRoot && driverEpoch\(\) === epochBefore\) \{/, 'the reads are kept only if they can be attributed');
   assert.match(body, /raced/, 'a discarded read is reported as raced, not as visible-only');
 });
 
@@ -214,4 +214,11 @@ test('every pre-dispatch refusal code is advertised as clean', async () => {
   const cli = readFileSync(join(REPO_ROOT, 'cli.ts'), 'utf8');
   const missing = codes.filter((c) => !mcp.includes(`'${c}'`) || !cli.includes(c));
   assert.deepEqual(missing, [], `pre-dispatch codes missing from the documented contract: ${missing.join(', ')}`);
+});
+
+test('the status read is guarded against ABA, not just endpoint equality', () => {
+  const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  const body = src.slice(src.indexOf('async getStatus()'), src.indexOf('private async detectAwaitingClarification'));
+  assert.match(body, /const epochBefore = driverEpoch\(\)/, 'the epoch is sampled before the reads');
+  assert.match(body, /driverEpoch\(\) === epochBefore/, 'and compared after — equality of URLs alone is defeated by A→B→A');
 });

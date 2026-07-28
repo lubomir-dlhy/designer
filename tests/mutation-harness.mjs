@@ -112,6 +112,12 @@ const MUTATIONS = [
     to: '    let awaitingClarification: boolean | null = false;'
   },
   {
+    id: 'STATUS — ABA navigation is not detected (URL equality only)',
+    file: 'designer-controller.ts',
+    from: 'if (rootAfter === targetRoot && driverEpoch() === epochBefore) {',
+    to: 'if (rootAfter === targetRoot) {'
+  },
+  {
     id: 'HEALTH — a missing switcher trigger is skipped instead of failed',
     file: 'ui-anchors.ts',
     from: "        return {\n          ok: false,\n          detail: `files-switcher trigger (${SEL.files.switcherTrigger}) is absent on a project page — deleteFile and designer_files_delete cannot run`\n        };",

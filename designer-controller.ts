@@ -282,8 +282,23 @@ export function tryAcquireDriverLock(locks: Map<string, string>, driver: string,
   const held = locks.get(driver);
   if (held) return held;
   locks.set(driver, label);
+  DRIVER_EPOCH += 1;
   return null;
 }
+
+/**
+ * Monotonic count of tab-driving operations started in this process.
+ *
+ * Lock-free readers use it to detect that SOMETHING drove the tab during their
+ * read. URL equality alone cannot: the tab can go A→B→A between two samples and
+ * compare equal while the reads either side came from different projects. Any
+ * in-process navigation goes through the lock, so a changed epoch is a reliable
+ * (deliberately over-eager) "your read may be mixed" signal. Out-of-process
+ * actors do not bump it — that is the documented cross-process gap, where URL
+ * equality remains the belt.
+ */
+let DRIVER_EPOCH = 0;
+export const driverEpoch = (): number => DRIVER_EPOCH;
 
 export function releaseDriverLock(locks: Map<string, string>, driver: string): void {
   locks.delete(driver);
@@ -413,6 +428,7 @@ export class DesignerController {
     let awaitingClarification: boolean | null = null;
     let raced = false;
     if (inSession && onThisKeysProject) {
+      const epochBefore = driverEpoch();
       // BOTH page reads are gated and attributed together. Fixing only the file
       // scrape left its sibling reading another project's last chat turn and
       // reporting it as this key's awaitingClarification — the same defect, one
@@ -420,7 +436,11 @@ export class DesignerController {
       const scraped = await this._scrapeVisibleFiles();
       const clarifying = await this.detectAwaitingClarification();
       const rootAfter = (await this.currentUrl()).split('?')[0];
-      if (rootAfter === targetRoot) {
+      // Both guards: the URL must still match AND no tab-driving operation may
+      // have started meanwhile. Equality alone is defeated by A→B→A — the reads
+      // either side can come from different projects while the endpoints
+      // compare equal.
+      if (rootAfter === targetRoot && driverEpoch() === epochBefore) {
         availableFiles = scraped;
         awaitingClarification = clarifying;
       } else {
