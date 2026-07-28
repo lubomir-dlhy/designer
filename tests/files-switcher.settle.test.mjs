@@ -64,3 +64,45 @@ test('foldSettleRead is TOTAL — an unknown kind cannot poison the next fold', 
   assert.deepEqual(out, { consecutive: 0, presentStreak: 0 });
   assert.doesNotThrow(() => foldSettleRead(out, { kind: 'gone' }));
 });
+
+// --- mutation-killing properties (round 5 criterion) ---
+// Each of these must FAIL if the corresponding mutation is applied, or the
+// runtime must collapse to outcome-unknown. See tests/mutation-harness.mjs.
+
+test('M1/M4: a REUSED subtree is never evidence, whatever it shows', () => {
+  // Close/reopen reusing the same DOM, or a no-op close, both surface as
+  // reused=true. Two such reads must not add up to a verdict.
+  const gone = classifySettleRead(rows('b'), 'a.html', 2, 1, true, true);
+  const present = classifySettleRead(rows('a', 'b'), 'a.html', 2, 1, true, true);
+  assert.deepEqual(gone, { kind: 'inconclusive' }, 'a reused "gone" read proves nothing');
+  assert.deepEqual(present, { kind: 'inconclusive' }, 'a reused "present" read proves nothing');
+  // …and therefore cannot reach the success bar.
+  assert.equal(run('inconclusive', 'inconclusive').consecutive, 0);
+});
+
+test('M1/M4: a FRESH subtree is evidence — the guard is not simply always-off', () => {
+  assert.deepEqual(classifySettleRead(rows('b'), 'a.html', 2, 1, true, false), { kind: 'gone' });
+});
+
+test('M5: no settle input throws, however malformed', () => {
+  const junk = [null, undefined, 0, '', 'rows', {}, [], [null], [{}], [{ label: null }], NaN, true];
+  for (const rowsIn of junk) {
+    for (const open of [true, false]) {
+      for (const reused of [true, false]) {
+        assert.doesNotThrow(
+          () => classifySettleRead(rowsIn, 'a.html', 2, 1, open, reused),
+          `classify threw on ${JSON.stringify(rowsIn)}`
+        );
+        const k = classifySettleRead(rowsIn, 'a.html', 2, 1, open, reused);
+        assert.doesNotThrow(() => foldSettleRead({ consecutive: 0, presentStreak: 0 }, k));
+      }
+    }
+  }
+});
+
+test('M5: an unknown kind never advances a counter toward a verdict', () => {
+  for (const kind of ['GONE', 'Present', '', null, undefined, 42]) {
+    const out = foldSettleRead({ consecutive: 1, presentStreak: 1 }, { kind });
+    assert.deepEqual(out, { consecutive: 0, presentStreak: 0 }, `kind ${String(kind)} must reset`);
+  }
+});

@@ -1684,8 +1684,8 @@ export class DesignerController {
     };
     const activeFileBefore = fileParamOf(await this.currentUrl());
 
-    const readRows = async (): Promise<SwitcherRow[] | null> =>
-      await this.browser.evalValue<SwitcherRow[]>(readRowsExpr(F)).catch(() => null);
+    const readRows = async (): Promise<{ rows: SwitcherRow[]; reused: boolean } | null> =>
+      await this.browser.evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(F)).catch(() => null);
     // Trusted open/close. The trigger is clicked through the facade, never via
     // an in-page synthetic click — see switcherStateExpr for why that matters
     // (a synthetic open strands the row menu's scrim above the confirm dialog).
@@ -1808,9 +1808,9 @@ export class DesignerController {
     > => {
       const opened = await openSwitcher();
       if (opened !== 'open') return { ok: false, error: 'switcher-unavailable' };
-      const rows = await readRows();
-      if (!rows) return { ok: false, error: 'switcher-unavailable' };
-      return { ok: true, rows, matches: matchingRowIndexes(rows, fileName) };
+      const read = await readRows();
+      if (!read) return { ok: false, error: 'switcher-unavailable' };
+      return { ok: true, rows: read.rows, matches: matchingRowIndexes(read.rows, fileName) };
     };
 
     // A confirm dialog left open by an earlier interrupted run blocks every
@@ -2065,13 +2065,21 @@ export class DesignerController {
         }
         await closeSwitcher();
         const state = await openSwitcher();
-        const rows = state === 'open' || state === 'open-empty' ? await readRows() : null;
+        const open = state === 'open' || state === 'open-empty';
+        const observed = open ? await readRows() : null;
         if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
           return unknown('the tab navigated away while the file list was being read');
         }
-        const read = classifySettleRead(rows, fileName, preCount, preLabelCount, state === 'open' || state === 'open-empty');
+        const read = classifySettleRead(
+          observed?.rows ?? null,
+          fileName,
+          preCount,
+          preLabelCount,
+          open,
+          observed?.reused ?? false
+        );
         counters = foldSettleRead(counters, read);
-        if (read.kind === 'gone') lastGoodRows = rows ?? [];
+        if (read.kind === 'gone') lastGoodRows = observed?.rows ?? [];
         if (counters.consecutive >= 2) break;
       }
 

@@ -112,9 +112,11 @@ async function main() {
   };
   const rows = async (): Promise<SwitcherRow[]> => {
     await openSwitcher();
-    const r = await c.browser.evalValue<SwitcherRow[]>(readRowsExpr(SEL.files)).catch(() => [] as SwitcherRow[]);
+    const r = await c.browser
+      .evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(SEL.files))
+      .catch(() => null);
     await closeSwitcher();
-    return r;
+    return r?.rows ?? [];
   };
 
   // --- add a second page so the project is multi-file (never delete a last page) ---

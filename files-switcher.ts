@@ -41,6 +41,17 @@ export const CONFIRM_ECHO_RE_SRC = 'Delete\\s+"([^"]+)"';
 /** Attribute the stamping expressions write; the caller clicks the stamped node. */
 export const STAMP_ATTR = 'data-designer-target';
 export const STAMP_ROW = 'row';
+/**
+ * Marks a popover subtree this process has already read.
+ *
+ * Read independence cannot be inferred from "we called close() then open()":
+ * if the app reuses the same DOM subtree, or close is a no-op, every later poll
+ * re-reads one stale mount and N reads masquerade as N observations. So the
+ * reader STAMPS the container it read; finding that stamp still present next
+ * time proves the subtree was reused, and the read is reported as such rather
+ * than counted.
+ */
+export const STAMP_MOUNT = 'mount-read';
 export const STAMP_MENU_DELETE = 'menu-delete';
 export const STAMP_CONFIRM_DELETE = 'confirm-delete';
 export const STAMP_CONFIRM_CANCEL = 'confirm-cancel';
@@ -102,11 +113,22 @@ export function switcherStateExpr(f: Selectors['files']): string {
     // last file was just deleted has an OPEN popover with zero rows, and calling
     // that 'closed' made the opener toggle it shut and thrash (each cycle costs
     // ~2s of sleeps and never recovers). The popover's own chrome is the signal.
+    // Structural first: an expanded trigger is the product's own statement.
+    const trigger = document.querySelector(${JSON.stringify(f.switcherTrigger)});
+    const expanded = trigger && trigger.getAttribute('aria-expanded');
+    if (expanded === 'true') return 'open-empty';
+    if (expanded === 'false') return 'closed';
+    // Text fallback for a build that exposes no aria-expanded. If the label ever
+    // changes this stops matching — which must NOT read as 'closed', because a
+    // wrong 'closed' makes the opener toggle a live popover shut. Unknown is the
+    // safe value: the settle treats it as inconclusive and the verb collapses to
+    // outcome-unknown rather than inventing a verdict.
     const chrome = Array.from(document.querySelectorAll('button')).some(
       (b) => (b.textContent || '').trim() === ${JSON.stringify(MENU_NEW_BLANK_PAGE)}
     );
     if (chrome) return 'open-empty';
-    return document.querySelector(${JSON.stringify(f.switcherTrigger)}) ? 'closed' : 'no-trigger';
+    if (!trigger) return 'no-trigger';
+    return 'unknown';
   })()`;
 }
 
@@ -117,7 +139,12 @@ export function switcherStateExpr(f: Selectors['files']): string {
  */
 export function readRowsExpr(f: Selectors['files']): string {
   return `(() => {
-    return Array.from(document.querySelectorAll(${JSON.stringify(f.switcherRow)})).map((r) => {
+    const nodes = Array.from(document.querySelectorAll(${JSON.stringify(f.switcherRow)}));
+    // Independence probe: was this exact subtree already read by us?
+    const container = nodes[0] ? nodes[0].parentElement : null;
+    const reused = !!container && container.getAttribute('${STAMP_ATTR}') === '${STAMP_MOUNT}';
+    if (container) container.setAttribute('${STAMP_ATTR}', '${STAMP_MOUNT}');
+    const rows = nodes.map((r) => {
       const raw = (r.innerText || '').trim();
       const lines = raw.split('\\n').map((s) => s.trim()).filter(Boolean);
       if (lines.length > 1) return { label: lines[0], editedText: lines[1] };
@@ -312,6 +339,7 @@ export function clearStampsExpr(): string {
  * dotted stem ("v1.2-notes.html") keeps its dots.
  */
 export function displayLabelFor(filename: string): string {
+  if (typeof filename !== 'string') return '';
   return filename.replace(/(\.[A-Za-z0-9]+)+$/, '') || filename;
 }
 
@@ -322,6 +350,7 @@ export function displayLabelFor(filename: string): string {
  * for authorizing a deletion.
  */
 export function normalizeLabel(s: string): string {
+  if (typeof s !== 'string') return '';
   return s.toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
@@ -329,7 +358,13 @@ export function normalizeLabel(s: string): string {
 export function matchingRowIndexes(rows: SwitcherRow[], filename: string): number[] {
   const want = normalizeLabel(displayLabelFor(filename));
   const indexes: number[] = [];
+  if (!Array.isArray(rows)) return indexes;
   rows.forEach((r, i) => {
+    // The rows come from a page we do not control, so a malformed element must
+    // not throw: after an irreversible dispatch a throw escapes the declared
+    // result union entirely, losing the snapshot path and the "MAY be deleted"
+    // warning. Skip what cannot be read.
+    if (!r || typeof r.label !== 'string') return;
     const label = normalizeLabel(r.label);
     // Accept the label with or without an extension chain — some views render
     // the full filename in the row.
@@ -343,6 +378,7 @@ export function matchingRowIndexes(rows: SwitcherRow[], filename: string): numbe
  * token; anything else is null (fail closed).
  */
 export function parseConfirmDialog(text: string): { dialogFile: string | null } {
+  if (typeof text !== 'string') return { dialogFile: null };
   const all = [...text.matchAll(new RegExp(CONFIRM_ECHO_RE_SRC, 'g'))];
   return { dialogFile: all.length === 1 ? (all[0]?.[1] ?? null) : null };
 }
@@ -386,9 +422,13 @@ export function classifySettleRead(
   fileName: string,
   preCount: number,
   preLabelCount: number,
-  popoverOpen: boolean
+  popoverOpen: boolean,
+  reusedMount = false
 ): SettleRead {
-  if (rows === null) return { kind: 'inconclusive' };
+  // A re-read of a subtree we already counted is not new evidence, whatever it
+  // says. This is what makes "two consecutive reads" mean two observations.
+  if (reusedMount) return { kind: 'inconclusive' };
+  if (rows === null || !Array.isArray(rows)) return { kind: 'inconclusive' };
   if (rows.length === 0) {
     if (!popoverOpen) return { kind: 'inconclusive' };
     // Open and empty: a real observation. Only 'gone' if we expected exactly one.

@@ -946,7 +946,10 @@ export const UI_ANCHORS: AnchorDef[] = [
         if (opened !== 'open') {
           verdict = { ok: false, detail: `switcher trigger present but would not open (${opened})` };
         } else {
-          const rows = await b.evalValue<SwitcherRow[]>(readRowsExpr(SEL.files)).catch(() => [] as SwitcherRow[]);
+          const read = await b
+            .evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(SEL.files))
+            .catch(() => null);
+          const rows = read?.rows ?? [];
           entryCount = rows.length;
           if (rows.length === 0) {
             verdict = { ok: true, status: 'skip', detail: 'switcher opened but listed 0 rows — inconclusive' };

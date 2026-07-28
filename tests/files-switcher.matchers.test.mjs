@@ -110,6 +110,20 @@ test('expressions interpolate the live selectors (no hardcoded testids)', () => 
   assert.ok(stampRowExpr(SEL.files, 2).includes(JSON.stringify(SEL.files.switcherRow)), 'row selector from selectors.json');
 });
 
+test('M2: state is never guessed as closed — an undeterminable popover is unknown', () => {
+  const expr = switcherStateExpr(SEL.files);
+  // A wrong 'closed' makes the opener toggle a LIVE popover shut. If the chrome
+  // label is renamed and no aria-expanded is exposed, the answer must be
+  // 'unknown' (inconclusive -> outcome-unknown), never 'closed'.
+  assert.match(expr, /aria-expanded/, 'structural signal is tried first');
+  assert.match(expr, /'unknown'/, 'undeterminable state has its own value');
+  const afterChrome = expr.slice(expr.indexOf('const chrome'));
+  assert.ok(
+    afterChrome.indexOf("return 'unknown'") > afterChrome.indexOf("if (!trigger)"),
+    'the fallback path ends in unknown, not closed'
+  );
+});
+
 test('switcherStateExpr only READS state — the open is a trusted facade click', () => {
   const expr = switcherStateExpr(SEL.files);
   // Opening synthetically strands the row menu's `fixed inset-0` scrim above
