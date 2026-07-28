@@ -2,12 +2,20 @@
 title: designer_files_delete — agent-driven deletion of outdated project files
 objective: Let an agent (via MCP) or a human (via CLI) safely delete a named file from a claude.ai/design project, so messy multi-file projects can be cleaned without hand-driving the UI
 type: feat
-status: active
+status: completed
 date: 2026-07-26
 origin: live-probe session 2026-07-26 (throwaway destructive rehearsal) + 3-lane repo exploration + 3-lane adversarial verification (v2 incorporates all verified findings)
 ---
 
 # designer_files_delete — Deep blueprint (v2, post-adversarial-review)
+
+> **Shipped, with corrections.** The result union below is HISTORICAL: five
+> review rounds against the live product removed `still-present` and
+> `unverified` in favour of a single post-dispatch `outcome-unknown`, because a
+> laggy file-list scrape cannot prove non-deletion. The shipped contract is in
+> `DeleteFileResult` (designer-controller.ts) and the reasoning in
+> `docs/adr/0001-destructive-ui-automation-safety.md`. Read those, not this,
+> for current behaviour.
 
 ## Ground truth (live-probe, 2026-07-26, destructively verified on a throwaway project)
 
