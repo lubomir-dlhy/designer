@@ -110,16 +110,14 @@ for (const m of MUTATIONS) {
   }
   if (!failed) {
     try {
-      execFileSync(
-        'node',
-        ['--import', 'tsx', '--test',
-         'tests/files-switcher.settle.test.mjs', 'tests/files-switcher.matchers.test.mjs',
-         'tests/controller-lock.reentrancy.test.mjs', 'tests/controller-lock.acquire.test.mjs'],
-        { cwd: dir, stdio: 'pipe' }
-      );
+      // The REAL gate, not a hand-picked subset. A curated list is how this
+      // harness reported a mutation as surviving that a manual run killed: the
+      // test file that caught it had been added after the list was written.
+      // Same defect class this harness exists to find.
+      execFileSync('npm', ['test'], { cwd: dir, stdio: 'pipe' });
     } catch (e) {
       failed = true;
-      detail = 'tests';
+      detail = 'gate';
     }
   }
   if (failed) {
