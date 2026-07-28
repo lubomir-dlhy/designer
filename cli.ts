@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { xspawn, xspawnSync, WHICH, IS_WIN } from './cross-platform.ts';
-import { DesignerController } from './designer-controller.ts';
+import { DesignerController, withTabLock } from './designer-controller.ts';
 import { listSessions, getSession } from './session-store.ts';
 import { createBrowser } from './browser.ts';
 import { writeTastingHtml, serveAndOpen } from './tasting.ts';
@@ -272,7 +272,10 @@ async function main(): Promise<void> {
       const c = new DesignerController({ key });
       await c.selectDesignTab().catch(() => null);
       const browser = c.browser;
-      const results = await runHealth(browser);
+      // The health walk CLICKS (the switcher anchor hovers, opens a row menu and
+      // presses Escape), so it holds the tab lock like any other tab-driving
+      // operation — otherwise a probe can close the popover mid-delete.
+      const results = await withTabLock(browser, 'health[cli]', () => runHealth(browser));
       const counts = results.reduce<Record<string, number>>((acc, r) => {
         acc[r.status] = (acc[r.status] || 0) + 1;
         return acc;

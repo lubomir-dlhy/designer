@@ -12,6 +12,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createBrowser, type Browser } from '../browser.ts';
+import { withTabLock } from '../designer-controller.ts';
 import { runHealth, UI_ANCHORS, type ProbeResult } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
 import { getSelectors } from '../selectors.ts';
@@ -478,7 +479,9 @@ async function main(): Promise<void> {
     homeNav = { target: HOME_URL, landedOn: '', error: (e as Error).message };
     console.log(`[ci-health] home navigation failed — ${(e as Error).message}; home anchors will fail loudly`);
   }
-  const homeResults = await runHealth(browser, { phase: 'home' });
+  // Same reason as the CLI path: the switcher anchor drives the tab, so the
+  // probe takes the tab lock rather than racing anything else in this process.
+  const homeResults = await withTabLock(browser, 'health[ci:home]', () => runHealth(browser, { phase: 'home' }));
 
   // Phase 2 — session (canary project). Covers session.* / share.* anchors
   // + the `any`-state anchor again. Only runs when DESIGNER_PROBE_PROJECT_URL
@@ -503,7 +506,7 @@ async function main(): Promise<void> {
     // prompt against DESIGNER_PROBE_PROJECT_URL and verifies the live
     // OmeletteService Chat/RenewTurn/ReleaseTurn contract.
     process.env.DESIGNER_TURN_RPC_CANARY ??= '1';
-    sessionResults = await runHealth(browser, { phase: 'session' });
+    sessionResults = await withTabLock(browser, 'health[ci:session]', () => runHealth(browser, { phase: 'session' }));
   } else {
     console.log('[ci-health] DESIGNER_PROBE_PROJECT_URL unset — skipping session phase');
   }

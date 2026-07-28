@@ -26,7 +26,9 @@ test('the lock resource is the SESSION (the active tab), not the key or the proj
 });
 
 test('re-entrancy is per async OPERATION, not per controller instance', () => {
-  const body = src.slice(src.indexOf('private async _withExclusive'), src.indexOf('/** The operation currently driving'));
+  // The single implementation lives in the standalone withTabLock; the
+  // controller delegates to it (asserted separately).
+  const body = src.slice(src.indexOf('export async function withTabLock'), src.indexOf('export class DesignerController'));
   assert.match(body, /LOCK_CTX\.getStore\(\)/, 're-entrancy is decided from the async context');
   assert.match(body, /LOCK_CTX\.run\(/, 'the held set is propagated to nested calls');
   // An instance flag would let two concurrent calls on ONE controller both
@@ -117,4 +119,26 @@ test('the settle uses the shared counter reducer rather than ad-hoc arithmetic',
   assert.match(body, /counters\.consecutive >= 2/, 'success needs two consecutive reads');
   assert.match(body, /counters\.presentStreak >= 2/, 'still-present needs two consecutive reads too');
   assert.ok(!/sawTargetPresent/.test(body), 'the single-read latch is gone');
+});
+
+// The invariant cannot be enforced at the controller boundary alone, because
+// `browser` is a public field and runHealth takes one. Every place that hands a
+// raw Browser to something that clicks must take the lock itself.
+test('the health walk drives the tab under the lock, not around it', async () => {
+  const cli = stripComments(fs.readFileSync(path.join(REPO_ROOT, 'cli.ts'), 'utf8'));
+  const ci = stripComments(fs.readFileSync(path.join(REPO_ROOT, 'scripts/ci-health.ts'), 'utf8'));
+  for (const [name, source] of [['cli.ts', cli], ['scripts/ci-health.ts', ci]]) {
+    const calls = [...source.matchAll(/runHealth\(/g)];
+    assert.ok(calls.length > 0, `${name} should call runHealth`);
+    for (const m of calls) {
+      const before = source.slice(Math.max(0, m.index - 120), m.index);
+      assert.match(before, /withTabLock\(/, `${name}: runHealth at ${m.index} is not inside withTabLock`);
+    }
+  }
+});
+
+test('there is ONE lock implementation, not a controller copy and a standalone copy', () => {
+  const impls = [...src.matchAll(/tryAcquireDriverLock\(DRIVER_LOCKS/g)];
+  assert.equal(impls.length, 1, 'a second acquire path would drift from the first');
+  assert.match(src.slice(src.indexOf('private async _withExclusive')), /return withTabLock\(/, 'the controller delegates');
 });

@@ -254,6 +254,33 @@ export function releaseDriverLock(locks: Map<string, string>, driver: string): v
 /** Lock keys held by the operation running in the current async context. */
 const LOCK_CTX = new AsyncLocalStorage<Set<string>>();
 
+/**
+ * Run `fn` holding the tab lock for `browser`, for callers that hold a Browser
+ * rather than a controller.
+ *
+ * `runHealth` is the reason this is public: the switcher anchor hovers, clicks,
+ * presses Escape and toggles the popover, and both `designer health` (cli.ts)
+ * and the daily CI probe hand it a raw browser — so the probe was driving the
+ * shared tab outside the lock and could close the popover in the middle of a
+ * delete's settle. The invariant cannot live at the controller boundary alone
+ * when the resource handle escapes it.
+ */
+export async function withTabLock<T>(browser: Browser, name: string, fn: () => Promise<T>): Promise<T> {
+  const resource = browser.driverId;
+  const inherited = LOCK_CTX.getStore();
+  if (inherited?.has(resource)) return fn();
+  const held = tryAcquireDriverLock(DRIVER_LOCKS, resource, name);
+  if (held) throw new Error(`designer is busy: ${held} is already driving the browser tab`);
+  const store = new Set(inherited ?? []);
+  store.add(resource);
+  try {
+    return await LOCK_CTX.run(store, fn);
+  } finally {
+    store.delete(resource);
+    releaseDriverLock(DRIVER_LOCKS, resource);
+  }
+}
+
 export class DesignerController {
   readonly key: string;
   readonly selectors: Selectors;
@@ -1146,27 +1173,11 @@ export class DesignerController {
     return DRIVER_LOCKS.get(resource) ?? null;
   }
 
+  // Re-entrant for the SAME operation: an outer verb that already holds the tab
+  // may call inner verbs freely (deleteFile -> fetchFile -> openFile). One
+  // implementation, shared with the standalone withTabLock above.
   private async _withExclusive<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    const resource = this._lockKey();
-    // Re-entrant for the SAME operation: an outer verb that already holds the
-    // tab may call inner verbs freely (deleteFile -> fetchFile -> openFile).
-    const inherited = LOCK_CTX.getStore();
-    if (inherited?.has(resource)) return fn();
-
-    const held = tryAcquireDriverLock(DRIVER_LOCKS, resource, `${name}[${this.key}]`);
-    if (held) throw new Error(`designer is busy: ${held} is already driving the browser tab`);
-    const store = new Set(inherited ?? []);
-    store.add(resource);
-    try {
-      return await LOCK_CTX.run(store, fn);
-    } finally {
-      // Invalidate the grant as well as the lock. A detached continuation
-      // started inside the body keeps this async context after the release; if
-      // it called a locked verb it would take the re-entrant branch and drive
-      // the tab with NO lock held. Review of e038462.
-      store.delete(resource);
-      releaseDriverLock(DRIVER_LOCKS, resource);
-    }
+    return withTabLock(this.browser, `${name}[${this.key}]`, fn);
   }
 
   /** The operation currently driving this controller's tab, or null. */
