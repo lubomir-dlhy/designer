@@ -196,3 +196,22 @@ test('both status page-reads are gated and attributed together', () => {
   assert.match(body, /availableFiles = scraped;\s*\n\s*awaitingClarification = clarifying;/, 'both are attributed together');
   assert.ok(!/inSession \? await this\.detectAwaitingClarification/.test(body), 'the ungated read is gone');
 });
+
+test('an unattributed clarification read is null, not a confident false', () => {
+  // A `false` that means "we could not check" is the same unearned certainty
+  // this verb removes everywhere else.
+  const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
+  assert.match(src, /awaitingClarification: boolean \| null;/, 'the field admits "unknown"');
+  assert.match(src, /let awaitingClarification: boolean \| null = null;/, 'and defaults to unknown, not false');
+});
+
+test('every pre-dispatch refusal code is advertised as clean', async () => {
+  // A code the caller cannot find in the contract is a code they cannot act on.
+  const controller = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
+  const union = controller.slice(controller.indexOf('export type DeleteFileError'), controller.indexOf("| 'outcome-unknown';"));
+  const codes = [...union.matchAll(/'([a-z-]+)'/g)].map((m) => m[1]);
+  const mcp = readFileSync(join(REPO_ROOT, 'mcp-server.ts'), 'utf8');
+  const cli = readFileSync(join(REPO_ROOT, 'cli.ts'), 'utf8');
+  const missing = codes.filter((c) => !mcp.includes(`'${c}'`) || !cli.includes(c));
+  assert.deepEqual(missing, [], `pre-dispatch codes missing from the documented contract: ${missing.join(', ')}`);
+});

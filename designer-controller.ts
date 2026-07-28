@@ -147,7 +147,13 @@ export interface SessionStatus {
   // teaser. The questions UI itself is ephemeral — it disappears on refresh and has no
   // stable DOM contract — so we don't try to scrape and answer them. Caller should
   // surface this to a human, or re-prompt with `decisive: true` to bypass.
-  awaitingClarification: boolean;
+  /**
+   * True/false when the read could be attributed to THIS key's project; `null`
+   * when it could not (no session, or the tab moved mid-read — see filesScope
+   * 'raced'). A plain `false` would read as "definitely not awaiting", which is
+   * the same unearned certainty this verb removes everywhere else.
+   */
+  awaitingClarification: boolean | null;
 }
 
 export type FailureMode = null | 'timeout' | 'unstable' | 'no_change' | 'stalled' | 'blocked';
@@ -404,7 +410,7 @@ export class DesignerController {
     // or discard it; never label a racing read 'visible-only'. Codex review,
     // PR #134.
     let availableFiles: string[] = [];
-    let awaitingClarification = false;
+    let awaitingClarification: boolean | null = null;
     let raced = false;
     if (inSession && onThisKeysProject) {
       // BOTH page reads are gated and attributed together. Fixing only the file

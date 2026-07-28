@@ -610,7 +610,7 @@ before the delete and the delete is ABORTED if that snapshot fails (--snapshot=f
 Refusals that guarantee nothing was deleted (no confirm click was ever dispatched): not-found,
 ambiguous (two files share a display label — the switcher hides extensions), confirm-mismatch
 (the product's dialog named a different file), menu-unavailable, snapshot-failed, wrong-project,
-busy, switcher-unavailable, dialog-stuck.
+busy, switcher-unavailable, dialog-stuck, project-changed.
 
 Once a confirm click is dispatched there is exactly ONE failure code: outcome-unknown. The file
 may or may not be gone, and this command will not guess — the file list lags the delete, so it

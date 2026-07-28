@@ -106,6 +106,12 @@ const MUTATIONS = [
     to: '        note:'
   },
   {
+    id: 'STATUS — an unattributed clarification read reports a definite false',
+    file: 'designer-controller.ts',
+    from: "    let awaitingClarification: boolean | null = null;",
+    to: '    let awaitingClarification: boolean | null = false;'
+  },
+  {
     id: 'HEALTH — a missing switcher trigger is skipped instead of failed',
     file: 'ui-anchors.ts',
     from: "        return {\n          ok: false,\n          detail: `files-switcher trigger (${SEL.files.switcherTrigger}) is absent on a project page — deleteFile and designer_files_delete cannot run`\n        };",
