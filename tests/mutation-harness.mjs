@@ -112,6 +112,12 @@ const MUTATIONS = [
     to: '    let awaitingClarification: boolean | null = false;'
   },
   {
+    id: 'STATUS — the race epoch is process-global instead of per-driver',
+    file: 'designer-controller.ts',
+    from: "  DRIVER_EPOCHS.set(driver, (DRIVER_EPOCHS.get(driver) ?? 0) + 1);",
+    to: "  DRIVER_EPOCHS.set('global', (DRIVER_EPOCHS.get('global') ?? 0) + 1);"
+  },
+  {
     id: 'STATUS — ABA navigation is not detected (URL equality only)',
     file: 'designer-controller.ts',
     from: 'if (rootAfter === targetRoot && driverEpoch() === epochBefore) {',

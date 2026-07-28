@@ -282,23 +282,31 @@ export function tryAcquireDriverLock(locks: Map<string, string>, driver: string,
   const held = locks.get(driver);
   if (held) return held;
   locks.set(driver, label);
-  DRIVER_EPOCH += 1;
+  DRIVER_EPOCHS.set(driver, (DRIVER_EPOCHS.get(driver) ?? 0) + 1);
   return null;
 }
 
 /**
- * Monotonic count of tab-driving operations started in this process.
+ * Monotonic count of tab-driving operations started, PER DRIVER.
  *
- * Lock-free readers use it to detect that SOMETHING drove the tab during their
+ * Lock-free readers use it to detect that something drove *their* tab during a
  * read. URL equality alone cannot: the tab can go A→B→A between two samples and
  * compare equal while the reads either side came from different projects. Any
  * in-process navigation goes through the lock, so a changed epoch is a reliable
- * (deliberately over-eager) "your read may be mixed" signal. Out-of-process
- * actors do not bump it — that is the documented cross-process gap, where URL
- * equality remains the belt.
+ * "your read may be mixed" signal.
+ *
+ * Keyed by driverId, not global. Under DESIGNER_CDP='' each key gets its own
+ * agent-browser session and therefore its own tab, so a process-wide counter
+ * made key B's activity invalidate key A's status read of a tab B could not
+ * touch — defeating the parallel isolation that mode exists to provide. The
+ * epoch must be as narrow as the resource it stands for, which is the same
+ * lesson the lock itself took three attempts to learn.
+ *
+ * Out-of-process actors do not bump it — the documented cross-process gap,
+ * where URL equality remains the belt.
  */
-let DRIVER_EPOCH = 0;
-export const driverEpoch = (): number => DRIVER_EPOCH;
+const DRIVER_EPOCHS = new Map<string, number>();
+export const driverEpoch = (driver: string): number => DRIVER_EPOCHS.get(driver) ?? 0;
 
 export function releaseDriverLock(locks: Map<string, string>, driver: string): void {
   locks.delete(driver);
@@ -428,7 +436,7 @@ export class DesignerController {
     let awaitingClarification: boolean | null = null;
     let raced = false;
     if (inSession && onThisKeysProject) {
-      const epochBefore = driverEpoch();
+      const epochBefore = driverEpoch(this.browser.driverId);
       // BOTH page reads are gated and attributed together. Fixing only the file
       // scrape left its sibling reading another project's last chat turn and
       // reporting it as this key's awaitingClarification — the same defect, one
@@ -440,7 +448,7 @@ export class DesignerController {
       // have started meanwhile. Equality alone is defeated by A→B→A — the reads
       // either side can come from different projects while the endpoints
       // compare equal.
-      if (rootAfter === targetRoot && driverEpoch() === epochBefore) {
+      if (rootAfter === targetRoot && driverEpoch(this.browser.driverId) === epochBefore) {
         availableFiles = scraped;
         awaitingClarification = clarifying;
       } else {

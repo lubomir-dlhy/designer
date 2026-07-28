@@ -41,28 +41,38 @@ test('releasing a tab nobody holds is harmless', () => {
 // --- the epoch that lock-free readers use to detect ABA ---
 import { driverEpoch } from '../designer-controller.ts';
 
-test('every acquired lock advances the driver epoch', () => {
+test('every acquired lock advances that driver\'s epoch', () => {
   const locks = new Map();
-  const before = driverEpoch();
+  const before = driverEpoch('sess');
   tryAcquireDriverLock(locks, 'sess', 'iterate[a]');
-  assert.equal(driverEpoch(), before + 1, 'an acquire is observable to lock-free readers');
+  assert.equal(driverEpoch('sess'), before + 1, 'an acquire is observable to lock-free readers');
 });
 
 test('a REFUSED acquire does not advance the epoch — nothing drove the tab', () => {
   const locks = new Map();
-  tryAcquireDriverLock(locks, 'sess', 'iterate[a]');
-  const after = driverEpoch();
-  tryAcquireDriverLock(locks, 'sess', 'deleteFile[b]'); // refused
-  assert.equal(driverEpoch(), after, 'a refusal is not a navigation');
+  tryAcquireDriverLock(locks, 'sess-refuse', 'iterate[a]');
+  const after = driverEpoch('sess-refuse');
+  tryAcquireDriverLock(locks, 'sess-refuse', 'deleteFile[b]'); // refused
+  assert.equal(driverEpoch('sess-refuse'), after, 'a refusal is not a navigation');
 });
 
 test('an A -> B -> A round trip is still detectable, which URL equality alone is not', () => {
   const locks = new Map();
-  const before = driverEpoch();
-  // B drives, releases; A drives, releases. The URL ends where it started.
-  tryAcquireDriverLock(locks, 'sess', 'openFile[b]');
-  releaseDriverLock(locks, 'sess');
-  tryAcquireDriverLock(locks, 'sess', 'openFile[a]');
-  releaseDriverLock(locks, 'sess');
-  assert.ok(driverEpoch() > before, 'the round trip is visible even though the endpoints match');
+  const before = driverEpoch('sess-aba');
+  tryAcquireDriverLock(locks, 'sess-aba', 'openFile[b]');
+  releaseDriverLock(locks, 'sess-aba');
+  tryAcquireDriverLock(locks, 'sess-aba', 'openFile[a]');
+  releaseDriverLock(locks, 'sess-aba');
+  assert.ok(driverEpoch('sess-aba') > before, 'the round trip is visible even though the endpoints match');
+});
+
+test('a DIFFERENT driver\'s activity does not invalidate this one\'s read', () => {
+  // Under DESIGNER_CDP='' every key has its own session and its own tab. A
+  // process-global counter made key B's work discard key A's status read of a
+  // tab B cannot touch — defeating the isolation that mode provides.
+  const locks = new Map();
+  const mine = driverEpoch('driver-A');
+  tryAcquireDriverLock(locks, 'driver-B', 'iterate[b]');
+  releaseDriverLock(locks, 'driver-B');
+  assert.equal(driverEpoch('driver-A'), mine, "another driver's operation is not my race");
 });
