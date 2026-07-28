@@ -152,6 +152,7 @@ export function readRowsExpr(f: Selectors['files']): string {
       const m = raw.match(/^(.*?)\\s*(Edited\\s.+\\sago)$/i);
       return m ? { label: m[1].trim(), editedText: m[2] } : { label: raw, editedText: null };
     });
+    return { rows, reused };
   })()`;
 }
 
