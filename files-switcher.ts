@@ -489,3 +489,14 @@ export function foldSettleRead(c: SettleCounters, read: SettleRead): SettleCount
     }
   }
 }
+
+/**
+ * Should the caller close the popover before re-reading?
+ *
+ * Pure because the answer is a decision, not an action: treating 'open-empty'
+ * as already-closed left the last file's popover mounted across polls, so two
+ * reads of one mount looked independent. Any open-ish state must be closed.
+ */
+export function shouldCloseSwitcher(state: string): boolean {
+  return state === 'open' || state === 'open-empty';
+}

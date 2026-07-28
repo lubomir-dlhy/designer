@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { foldSettleRead, classifySettleRead } from '../files-switcher.ts';
+import { foldSettleRead, classifySettleRead, shouldCloseSwitcher } from '../files-switcher.ts';
 
 // The evidence rule for an irreversible operation, in two halves that are BOTH
 // tested: the classifier (observation -> kind) and the reducer (kind -> counters).
@@ -127,4 +127,14 @@ test('P1: two non-remounted empty reads cannot reach the success bar', () => {
     c = foldSettleRead(c, classifySettleRead([], 'only.html', 1, 1, true, false, false));
   }
   assert.equal(c.consecutive, 0, 'no amount of re-reading one mount proves a deletion');
+});
+
+test('every open-ish popover state must be closed before a re-read', () => {
+  // 'open-empty' is open. Treating it as closed is what let one mounted empty
+  // popover supply two "independent" observations.
+  assert.equal(shouldCloseSwitcher('open'), true);
+  assert.equal(shouldCloseSwitcher('open-empty'), true);
+  assert.equal(shouldCloseSwitcher('closed'), false);
+  assert.equal(shouldCloseSwitcher('unknown'), false);
+  assert.equal(shouldCloseSwitcher('no-trigger'), false);
 });

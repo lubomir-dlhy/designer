@@ -168,7 +168,10 @@ test('the settle uses the shared counter reducer rather than ad-hoc arithmetic',
   // Each poll must be a fresh MOUNT, or "consecutive reads" are re-reads of one
   // stale subtree — which is how a deleted file kept reading as present.
   assert.match(body, /closeSwitcher\(\)[\s\S]{0,200}openSwitcherTracked\(\)/, 'each settle read remounts the popover');
-  assert.match(body, /remounted/, 'the read carries whether it followed a real remount');
+  // The VARIABLE must reach the classifier — passing a literal `true` here is a
+  // wiring defect that no pure test can see.
+  assert.match(body, /const \{ state, remounted \} = await openSwitcherTracked\(\)/, 'the opener reports real remounts');
+  assert.match(body, /observed\?\.reused \?\? false,\s*\n\s*remounted\s*\n\s*\)/, 'remounted is passed through, not hardcoded');
   // Falling out of the loop on the DEADLINE is not success. This guard was
   // deleted once by a block rewrite and nothing caught it.
   assert.match(body, /counters\.consecutive < 2 \|\| !lastGoodRows/, 'deadline exit must not reach POST-SUCCESS');

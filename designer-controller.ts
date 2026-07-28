@@ -40,6 +40,7 @@ import {
   matchingRowIndexes,
   foldSettleRead,
   classifySettleRead,
+  shouldCloseSwitcher,
   type SettleCounters,
   displayLabelFor,
   STAMP_MENU_DELETE,
@@ -1720,11 +1721,10 @@ export class DesignerController {
       // file's popover mounted across polls, which is exactly how two reads of
       // one mount looked independent.
       const st = await switcherState();
-      if (st !== 'open' && st !== 'open-empty') return;
+      if (!shouldCloseSwitcher(st)) return;
       await this.browser.click(F.switcherTrigger).catch(() => null);
       await sleep(400);
-      const after = await switcherState();
-      if (after === 'open' || after === 'open-empty') await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
+      if (shouldCloseSwitcher(await switcherState())) await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
     };
     const clearStamps = async () => {
       await this.browser.evalValue(clearStampsExpr()).catch(() => null);

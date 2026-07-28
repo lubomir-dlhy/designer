@@ -71,9 +71,9 @@ const MUTATIONS = [
   },
   {
     id: 'CONTROLLER — closeSwitcher ignores an open-empty popover',
-    file: 'designer-controller.ts',
-    from: "      if (st !== 'open' && st !== 'open-empty') return;",
-    to: "      if (st !== 'open') return;"
+    file: 'files-switcher.ts',
+    from: "  return state === 'open' || state === 'open-empty';",
+    to: "  return state === 'open';"
   },
   {
     id: 'CONTROLLER — the settle stops tracking real remounts',
@@ -96,8 +96,8 @@ const MUTATIONS = [
   {
     id: 'settle — the popover is not remounted between reads',
     file: 'designer-controller.ts',
-    from: '        await closeSwitcher();\n        const state = await openSwitcher();',
-    to: '        const state = await openSwitcher();'
+    from: '        await closeSwitcher();\n        const { state, remounted } = await openSwitcherTracked();',
+    to: '        const { state, remounted } = await openSwitcherTracked();'
   },
   {
     id: 'lock — the compound snapshot stops locking',
