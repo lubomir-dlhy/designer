@@ -2129,15 +2129,25 @@ export class DesignerController {
       // tab's file param as it stands now, or a snapshot-first delete leaves the
       // stored session resuming onto a file that no longer exists.
       const activeFileNow = fileParamOf(await this.currentUrl());
-      if (activeFileBefore === fileName || activeFileNow === fileName) {
-        // The tab (and the STORED url) point at a file that no longer exists;
-        // leaving designUrl as-is would resume every future session onto it.
-        await this.openGuarded(targetRoot).catch(() => null);
-        await this.browser.waitLoad('load').catch(() => null);
-        // Prove we actually arrived before claiming the reset or rewriting
-        // stored state — swallowing the navigation error and reporting
-        // activeFileReset:true left the tab on a deleted file's URL. #F6.
-        const arrived = (await this.currentUrl()).split('?')[0] === targetRoot;
+      const tabOnDeleted = activeFileBefore === fileName || activeFileNow === fileName;
+      // The STORED url can name the deleted file even when the tab never did:
+      // createSession persists the raw post-generation URL, which carries
+      // `?file=<name>`, and resumeSession opens it verbatim. Deleting that file
+      // while the tab happens to show a different one left designUrl pointing at
+      // a corpse — every later resume reopened it. Codex review, PR #134.
+      const storedNamesDeleted = fileParamOf(stored?.designUrl ?? '') === fileName;
+      if (tabOnDeleted || storedNamesDeleted) {
+        // Only navigate when the TAB is the problem; a stale stored URL just
+        // needs rewriting, and moving the tab for it would be gratuitous.
+        let arrived = true;
+        if (tabOnDeleted) {
+          await this.openGuarded(targetRoot).catch(() => null);
+          await this.browser.waitLoad('load').catch(() => null);
+          // Prove we actually arrived before claiming the reset or rewriting
+          // stored state — swallowing the navigation error and reporting
+          // activeFileReset:true left the tab on a deleted file's URL. #F6.
+          arrived = (await this.currentUrl()).split('?')[0] === targetRoot;
+        }
         if (arrived) {
           // targetRoot is `string` (narrowed by the !targetRoot throw above) and
           // is by construction stored.designUrl minus its query — no casts.
@@ -2151,6 +2161,7 @@ export class DesignerController {
         } else {
           warnings.push('the tab is still on the deleted file URL — navigate to the project root by hand');
         }
+
       }
       // The deletion is already committed; a failed history write must not turn
       // a completed non-idempotent operation into a reported failure. #F5.

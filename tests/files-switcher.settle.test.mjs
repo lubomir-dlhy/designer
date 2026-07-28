@@ -138,3 +138,29 @@ test('every open-ish popover state must be closed before a re-read', () => {
   assert.equal(shouldCloseSwitcher('unknown'), false);
   assert.equal(shouldCloseSwitcher('no-trigger'), false);
 });
+
+// --- stored-session hygiene (Codex PR #134 review) ---
+// createSession persists the raw post-generation URL, which carries
+// `?file=<name>`, and resumeSession opens it verbatim. So the delete flow must
+// consider the STORED url's file param, not only the tab's.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { REPO_ROOT } from '../repo-root.ts';
+
+test('the session reset considers the STORED url, not only the live tab', () => {
+  const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  assert.match(src, /storedNamesDeleted/, 'the stored designUrl file param is part of the decision');
+  assert.match(
+    src,
+    /if \(tabOnDeleted \|\| storedNamesDeleted\)/,
+    'either a stale tab OR a stale stored url triggers the rewrite'
+  );
+  // …and a stale stored url alone must not drag the tab around.
+  assert.match(src, /if \(tabOnDeleted\) \{/, 'navigation happens only when the TAB is the problem');
+});
+
+test('createSession stores a URL that can carry ?file=, which is why the above matters', () => {
+  const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
+  assert.match(src, /upsertSession\(this\.key, \{ designUrl: url, name, fidelity/, 'designUrl is the raw current URL');
+  assert.match(src, /await this\.openGuarded\(stored\.designUrl\)/, 'resumeSession opens it verbatim');
+});

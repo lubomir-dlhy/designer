@@ -82,6 +82,12 @@ const MUTATIONS = [
     to: '          true\n        );'
   },
   {
+    id: 'CONTROLLER — a stale stored designUrl is left naming the deleted file',
+    file: 'designer-controller.ts',
+    from: 'if (tabOnDeleted || storedNamesDeleted) {',
+    to: 'if (tabOnDeleted) {'
+  },
+  {
     id: 'HEALTH — a missing switcher trigger is skipped instead of failed',
     file: 'ui-anchors.ts',
     from: "        return {\n          ok: false,\n          detail: `files-switcher trigger (${SEL.files.switcherTrigger}) is absent on a project page — deleteFile and designer_files_delete cannot run`\n        };",
