@@ -185,9 +185,39 @@ async function main() {
   const afterDelete = await rows();
   check(afterDelete.length === afterAdd.length - 1, 're-read confirms the row is gone', afterDelete.map((r) => r.label));
 
-  // --- deleting it again must refuse, not "succeed" ---
-  const again = await c.deleteFile(targetFile, { dryRun: true });
-  check(again.ok === false && again.error === 'not-found', "re-delete refuses with 'not-found' (not idempotent-success)", again);
+  // --- REFUSAL PATHS ---
+  // The happy path is one of eleven outcomes, and for a destructive verb the
+  // dangerous ones are the refusals. Two are reachable live.
+
+  // busy: the tab lock must reject a second driver, not interleave with it.
+  await assertOwned('probe the busy path');
+  const [first, second] = await Promise.all([
+    c.deleteFile('definitely-not-here-busy-probe.html', { dryRun: true }),
+    c.deleteFile('definitely-not-here-busy-probe.html', { dryRun: true })
+  ]);
+  const busyCount = [first, second].filter((r) => !r.ok && r.error === 'busy').length;
+  check(busyCount === 1, "concurrent deletes: exactly one is refused with 'busy'", { first, second });
+
+  // last-file deletion: round 4 showed this was unverifiable by construction
+  // (an empty list was intercepted as inconclusive before the "gone" test could
+  // run). It must now succeed AND report an empty remainder.
+  const survivor = (await rows()).find((r) => !/^canvas$/i.test(r.label));
+  if (survivor) {
+    await assertOwned('delete the last file');
+    const last = await c.deleteFile(`${survivor.label}.dc.html`, { snapshot: true });
+    check(last.ok === true, 'deleting the LAST file in a project succeeds', last);
+    if (last.ok && !last.dryRun) {
+      check(last.remainingLabels.length === 0, 'the last delete reports an empty remainder', last.remainingLabels);
+      check(typeof last.snapshotPath === 'string', 'the backup was written before the delete', last.snapshotPath);
+    }
+    // …and an empty project resolves as not-found, not as a broken switcher.
+    const onEmpty = await c.deleteFile(`${survivor.label}.dc.html`, { dryRun: true });
+    check(
+      !onEmpty.ok && onEmpty.error === 'not-found',
+      "a dry run on an emptied project reports 'not-found', not 'switcher-unavailable'",
+      onEmpty
+    );
+  }
 
   // --- cleanup: delete the throwaway project (e2e-local helper; project delete
   // is deliberately NOT a production verb) ---

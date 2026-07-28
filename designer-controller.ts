@@ -1807,7 +1807,14 @@ export class DesignerController {
       { ok: true; rows: SwitcherRow[]; matches: number[] } | { ok: false; error: 'switcher-unavailable' }
     > => {
       const opened = await openSwitcher();
-      if (opened !== 'open') return { ok: false, error: 'switcher-unavailable' };
+      // 'open-empty' is a successful read of a project with no files — it must
+      // resolve to 'not-found', not to "the switcher is broken". Rejecting it
+      // made a dry run on an emptied project report switcher-unavailable, and
+      // that is the state the docs tell callers to inspect after an uncertain
+      // delete.
+      if (opened !== 'open' && opened !== 'open-empty') {
+        return { ok: false, error: 'switcher-unavailable' };
+      }
       const read = await readRows();
       if (!read) return { ok: false, error: 'switcher-unavailable' };
       return { ok: true, rows: read.rows, matches: matchingRowIndexes(read.rows, fileName) };
