@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { xspawn, xspawnSync, WHICH, IS_WIN } from './cross-platform.ts';
-import { DesignerController } from './designer-controller.ts';
+import { DesignerController, withTabLock } from './designer-controller.ts';
 import { listSessions, getSession } from './session-store.ts';
 import { createBrowser } from './browser.ts';
 import { writeTastingHtml, serveAndOpen } from './tasting.ts';
@@ -12,6 +12,7 @@ import { startMcpServer } from './mcp-server.ts';
 import { REPO_ROOT } from './repo-root.ts';
 import { runHealth } from './ui-anchors.ts';
 import { PACKAGE_VERSION } from './package-meta.ts';
+import { decodeConsent } from './cli-flags.ts';
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -122,8 +123,13 @@ async function main(): Promise<void> {
       const c = new DesignerController({ key });
       await c.ensureReady();
       const filename = flags.file as string | undefined;
-      if (filename) await c.openFile(filename);
-      const snap = await c.snapshotDesign();
+      // Single locked operation — see snapshotFile.
+      const snap = await c.snapshotFile(filename);
+      if (snap.swap && !snap.swap.ok) {
+        console.error(JSON.stringify({ ok: false, error: snap.swap.error, file: filename }, null, 2));
+        process.exitCode = 1;
+        break;
+      }
       if (snap.url) console.log(`\nTaste here: ${snap.url}\n`);
       console.log(
         JSON.stringify(
@@ -146,6 +152,17 @@ async function main(): Promise<void> {
       break;
     }
     case 'files': {
+      // `designer files delete x.html` is the shape a user extrapolates from
+      // `mcp serve`. Without this guard it fell through to the listing and
+      // exited 0 — a success-looking response to a destructive command.
+      if (flags._.length > 0) {
+        const sub = String(flags._[0]);
+        throw new Error(
+          sub === 'delete'
+            ? `Usage: designer files-delete "<name>.html" [--yes] --key k  (there is no 'files delete' subcommand)`
+            : `Unknown argument "${sub}" for 'files'. Usage: designer files [--key k]`
+        );
+      }
       const c = new DesignerController({ key });
       const detail = await c.listFilesDetailed();
       if (!detail.authoritative) {
@@ -154,6 +171,38 @@ async function main(): Promise<void> {
         );
       }
       console.log(JSON.stringify(detail, null, 2));
+      break;
+    }
+    case 'files-delete': {
+      // `--yes` takes no value, but parseFlags is generic: it swallows the
+      // following positional as the flag's value, and `--yes=false` arrives as
+      // a string. decodeConsent owns both cases (see cli-flags.ts). #F2.
+      const { consent, recoveredPositional } = decodeConsent(flags.yes as string | boolean | undefined);
+      if (recoveredPositional !== null) flags._.unshift(recoveredPositional);
+      const filename = flags._.join(' ');
+      if (!filename) throw new Error('Usage: designer files-delete "<name>.html" [--yes] --key k');
+      const c = new DesignerController({ key });
+      if (!consent) {
+        const preview = await c.deleteFile(filename, { dryRun: true });
+        console.log(JSON.stringify(preview, null, 2));
+        console.error(
+          `[designer] Dry run — nothing deleted. Re-run with --yes to delete "${filename}" (there is no undo; the file is snapshotted to the session dir first).`
+        );
+        break;
+      }
+      // parseFlags only ever produces a string or the boolean `true`, so a bare
+      // `flags.snapshot !== false` is ALWAYS true and the documented opt-out was
+      // unreachable — which made canvas pages (no served HTML to snapshot)
+      // permanently undeletable from the CLI.
+      const snapshot = flags.snapshot === undefined ? true : flags.snapshot === true ? true : !/^(false|0|no)$/i.test(String(flags.snapshot));
+      const r = await c.deleteFile(filename, { snapshot });
+      console.log(JSON.stringify(r, null, 2));
+      // Post-deletion cleanup problems are operator-actionable and must not be
+      // buried in an exit-0 JSON blob when lesser advisories get a banner.
+      if (r.ok && !r.dryRun && r.warnings?.length) {
+        for (const w of r.warnings) console.error(`[designer] ${w}`);
+      }
+      if (!r.ok) process.exitCode = 1;
       break;
     }
     case 'open-file': {
@@ -228,7 +277,10 @@ async function main(): Promise<void> {
       const c = new DesignerController({ key });
       await c.selectDesignTab().catch(() => null);
       const browser = c.browser;
-      const results = await runHealth(browser);
+      // The health walk CLICKS (the switcher anchor hovers, opens a row menu and
+      // presses Escape), so it holds the tab lock like any other tab-driving
+      // operation — otherwise a probe can close the popover mid-delete.
+      const results = await withTabLock(browser, 'health[cli]', () => runHealth(browser));
       const counts = results.reduce<Record<string, number>>((acc, r) => {
         acc[r.status] = (acc[r.status] || 0) + 1;
         return acc;
@@ -368,6 +420,9 @@ File / project introspection:
   files [--key k]                              files in current project
   open-file "<name>.html" [--key k]            switch open file
   fetch "<name>.html" [--key k] [--out p]      fetch served HTML to disk
+
+Destructive (dry-run by default; no undo in claude.ai/design):
+  files-delete "<name>.html" [--yes] [--key k] delete one file (snapshots it first)
 
 Exit / promotion:
   handoff [--key k] [--file "<name>.html"]     fetch export zip → project/ + decision-record.md
@@ -541,6 +596,28 @@ Flags: --key <k>
 Note: the scrape is flat-only. Files nested under folders (directions/, variants/) are
 invisible to this command. The handoff bundle is always folder-aware — use that for
 authoritative file listing.`,
+
+  'files-delete': `designer files-delete "<name>.html" — delete ONE file from the current project.
+
+Flags: --key <k>  --yes (actually delete; without it this is a dry run)  --snapshot=false (skip the backup)
+
+Put the filename BEFORE --yes. Dry run (no --yes) prints what would be deleted and exits 0;
+with --yes the exit code is 0 on success, 1 on any refusal.
+
+There is no undo in claude.ai/design, so the file's served HTML is written to the session dir
+before the delete and the delete is ABORTED if that snapshot fails (--snapshot=false overrides).
+
+Refusals that guarantee nothing was deleted (no confirm click was ever dispatched): not-found,
+ambiguous (two files share a display label — the switcher hides extensions), confirm-mismatch
+(the product's dialog named a different file), menu-unavailable, snapshot-failed, wrong-project,
+busy, switcher-unavailable, dialog-stuck, project-changed.
+
+Once a confirm click is dispatched there is exactly ONE failure code: outcome-unknown. The file
+may or may not be gone, and this command will not guess — the file list lags the delete, so it
+cannot prove the file survived. Re-run the dry run to see the real state before retrying.
+
+A successful delete can still carry warnings (printed to stderr): the file is gone, but some
+cleanup — updating the stored session, or navigating off the deleted file — did not complete.`,
 
   projects: `designer projects — list all Claude design projects visible on /design home.
 

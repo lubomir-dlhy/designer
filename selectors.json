@@ -37,6 +37,16 @@
   "composerLegacy": {
     "sendButton": "button[title^=\"Send (\"]"
   },
+  "files": {
+    "_note": "The 'Pages' files switcher — the UNIFIED file surface, present in BOTH the plain-HTML view and the .dc.html canvas editor (unlike the legacy 'Design Files' flat panel, plain-HTML only). Captured live 2026-07-26 via CDP probe + destructive rehearsal on a throwaway project. Rows exist only while the popover is open; per-row action buttons are hover-revealed and need TRUSTED input (synthetic el.click() silently no-ops on some of these menus). Menu items and confirm-dialog buttons carry no testids — they are located by text inside verify-and-stamp page expressions (files-switcher.ts), never by positional CSS.",
+    "switcherTrigger": "[data-testid=\"files-switcher-trigger\"]",
+    "switcherRow": "[data-testid=\"files-switcher-row\"]",
+    "rowMoreActions": "button[aria-label=\"More actions\"]",
+    "confirmDialog": "[role=\"dialog\"]"
+  },
+  "filesLegacy": {
+    "confirmDialog": "[role=\"alertdialog\"]"
+  },
   "preview": {
     "iframeOrContainer": "[data-testid=\"html-viewer-iframe\"]",
     "exportButtonText": "Export",

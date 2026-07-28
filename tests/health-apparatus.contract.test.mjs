@@ -456,7 +456,12 @@ test('project names are chosen by source priority, not string length', () => {
   // A control link ("Open") is SHORTER than the real name, so shortest-wins
   // picked the button label on exactly the multi-link row the dedupe exists for.
   const src = fs.readFileSync(path.join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
-  const scrape = src.slice(src.indexOf('const LINK_SEL ='), src.indexOf('async listFiles('));
+  // Anchor on the scrape block's own start/end markers, not on a neighbouring
+  // method signature — a rename moved that boundary and silently emptied the
+  // slice, turning this assertion into a no-op that still "passed" the regex.
+  const scrapeStart = src.indexOf('const LINK_SEL =');
+  const scrape = src.slice(scrapeStart, src.indexOf('_listFilesBody(', scrapeStart));
+  assert.ok(scrape.length > 200, 'scrape slice is empty — the boundary marker moved');
   assert.ok(!/sort\(\(x, y\) => x\.length - y\.length\)/.test(scrape), 'shortest-wins heuristic is back');
   assert.match(scrape, /NAME_SOURCES = \['rowCell', 'ariaLabel', 'anchorText'\]/, 'source priority order changed');
 });

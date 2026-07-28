@@ -50,6 +50,19 @@ export interface Selectors {
     attachButton?: string;
     modelButton?: string;
   };
+  // The "Pages" files switcher — the unified file surface (plain-HTML AND
+  // .dc.html canvas views). Menu items / dialog buttons carry no testids and are
+  // NOT selectors here: files-switcher.ts locates them by text inside
+  // verify-and-stamp expressions and clicks the stamped node.
+  files: {
+    switcherTrigger: string;
+    switcherRow: string;
+    /** Hover-revealed per-row action button (aria-label keyed). */
+    rowMoreActions: string;
+    /** The file-delete confirm dialog container (canonical single-branch). */
+    confirmDialog: string;
+  };
+  filesLegacy?: { confirmDialog?: string };
   preview: {
     iframeOrContainer: string;
     exportButtonText: string;
