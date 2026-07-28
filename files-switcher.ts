@@ -140,10 +140,15 @@ export function switcherStateExpr(f: Selectors['files']): string {
 export function readRowsExpr(f: Selectors['files']): string {
   return `(() => {
     const nodes = Array.from(document.querySelectorAll(${JSON.stringify(f.switcherRow)}));
-    // Independence probe: was this exact subtree already read by us?
-    const container = nodes[0] ? nodes[0].parentElement : null;
-    const reused = !!container && container.getAttribute('${STAMP_ATTR}') === '${STAMP_MOUNT}';
-    if (container) container.setAttribute('${STAMP_ATTR}', '${STAMP_MOUNT}');
+    // Independence probe, keyed on the identity of the ROW NODES themselves —
+    // not their container. A container stamp is defeated by re-parenting: move
+    // the same rows under a new parent and a stale read looks fresh. The nodes
+    // are the thing being read, so they carry the mark.
+    //
+    // Zero rows cannot be marked, and need not be: that read is only meaningful
+    // for the last-file case, where the popover is re-opened each poll anyway.
+    const reused = nodes.length > 0 && nodes.every((n) => n.getAttribute('${STAMP_ATTR}') === '${STAMP_MOUNT}');
+    nodes.forEach((n) => n.setAttribute('${STAMP_ATTR}', '${STAMP_MOUNT}'));
     const rows = nodes.map((r) => {
       const raw = (r.innerText || '').trim();
       const lines = raw.split('\\n').map((s) => s.trim()).filter(Boolean);

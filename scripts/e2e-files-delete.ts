@@ -27,6 +27,7 @@ import path from 'node:path';
 import { DesignerController } from '../designer-controller.ts';
 import { REPO_ROOT } from '../repo-root.ts';
 import { getSelectors } from '../selectors.ts';
+import { createBrowser } from '../browser.ts';
 import { switcherStateExpr, clickTriggerExpr, readRowsExpr, type SwitcherRow } from '../files-switcher.ts';
 
 const SEL = getSelectors();
@@ -197,6 +198,42 @@ async function main() {
   ]);
   const busyCount = [first, second].filter((r) => !r.ok && r.error === 'busy').length;
   check(busyCount === 1, "concurrent deletes: exactly one is refused with 'busy'", { first, second });
+
+  // EXTERNAL-ACTOR INTERLEAVING. The in-process lock cannot stop another
+  // process — or a human — moving the shared tab mid-flow, so the root re-assert
+  // before dispatch is the only defence there. Simulate it with a RAW browser
+  // handle on the same agent-browser session, which bypasses the lock exactly as
+  // an out-of-process actor would: start a delete, yank the tab to the home
+  // page, and require the delete to refuse without having deleted anything.
+  const rogue = createBrowser({ session: `designer-${KEY}` });
+  const beforeInterleave = (await rows()).map((r) => r.label);
+  if (beforeInterleave.length > 0) {
+    await assertOwned('probe the external-actor interleaving');
+    const victim = `${beforeInterleave[0]}.dc.html`;
+    const inFlight = c.deleteFile(victim, { snapshot: false });
+    await sleep(1200); // land inside resolve/hover, before the confirm dispatch
+    await rogue.open('https://claude.ai/design').catch(() => null);
+    const raced = await inFlight;
+    const refusedSafely =
+      !raced.ok && ['wrong-project', 'project-changed', 'switcher-unavailable', 'menu-unavailable', 'not-found'].includes(raced.error);
+    check(
+      refusedSafely || raced.ok === true,
+      'a tab yanked mid-flow either refuses cleanly or completes on the right project',
+      raced
+    );
+    // The load-bearing half: whatever it returned, it must not have acted on the
+    // page it was moved to.
+    await rogue.open(`https://claude.ai/design/p/${OWNED}`).catch(() => null);
+    await sleep(4000);
+    await waitForTrigger();
+    const afterInterleave = (await rows()).map((r) => r.label);
+    const expected = raced.ok ? beforeInterleave.length - 1 : beforeInterleave.length;
+    check(
+      afterInterleave.length === expected,
+      'the interleaved run deleted exactly what it reported, and nothing elsewhere',
+      { before: beforeInterleave, after: afterInterleave, result: raced.ok ? 'deleted' : raced.error }
+    );
+  }
 
   // last-file deletion: round 4 showed this was unverifiable by construction
   // (an empty list was intercepted as inconclusive before the "gone" test could

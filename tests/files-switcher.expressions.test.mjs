@@ -49,7 +49,10 @@ test('readRowsExpr reports a FRESH mount as not reused, and stamps it', () => {
   const out = evalExpr(readRowsExpr(SEL.files), document);
   assert.equal(out.reused, false, 'first read of a mount is fresh');
   assert.deepEqual(out.rows.map((r) => r.label), ['index', 'about']);
-  assert.equal(container.getAttribute(STAMP_ATTR), STAMP_MOUNT, 'the container is stamped as read');
+  // The ROWS carry the mark, not their container — see the re-parenting test.
+  for (const r of container.children) {
+    assert.equal(r.getAttribute(STAMP_ATTR), STAMP_MOUNT, 'each observed row is stamped as read');
+  }
 });
 
 test('readRowsExpr reports a RE-READ of the same subtree as reused', () => {
@@ -61,6 +64,32 @@ test('readRowsExpr reports a RE-READ of the same subtree as reused', () => {
   const second = evalExpr(readRowsExpr(SEL.files), document);
   assert.equal(first.reused, false);
   assert.equal(second.reused, true, 're-reading the same container must be flagged');
+});
+
+test('reuse survives RE-PARENTING — identity is the node, not its container', () => {
+  // The mutation: move the observed subtree under a new parent between reads.
+  // A container-keyed stamp calls that fresh; a node-keyed one does not.
+  const { container, document } = makeDom({ labels: ['index', 'about'] });
+  const first = evalExpr(readRowsExpr(SEL.files), document);
+  assert.equal(first.reused, false);
+  const newParent = makeEl();
+  for (const r of container.children) r.parentElement = newParent;
+  newParent.children = container.children;
+  const second = evalExpr(readRowsExpr(SEL.files), document);
+  assert.equal(second.reused, true, 're-parented rows are still the same observation');
+});
+
+test('a partially-refreshed list is NOT treated as reused', () => {
+  // One old row plus one new row is a real change; requiring EVERY node to be
+  // stamped keeps that classified as a fresh observation.
+  const a = makeDom({ labels: ['index'] });
+  evalExpr(readRowsExpr(SEL.files), a.document);
+  const stale = a.container.children[0];
+  const b = makeDom({ labels: ['about'] });
+  b.container.children.unshift(stale);
+  const rowsB = b.container.children;
+  b.document.querySelectorAll = (sel) => (sel === SEL.files.switcherRow ? rowsB : []);
+  assert.equal(evalExpr(readRowsExpr(SEL.files), b.document).reused, false);
 });
 
 test('readRowsExpr treats a genuinely NEW mount as fresh again', () => {

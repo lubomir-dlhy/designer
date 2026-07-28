@@ -34,6 +34,12 @@ const MUTATIONS = [
     to: 'const reused = false;'
   },
   {
+    id: 'reuse — identity keyed on the container, defeated by re-parenting',
+    file: 'files-switcher.ts',
+    from: "const reused = nodes.length > 0 && nodes.every((n) => n.getAttribute('${STAMP_ATTR}') === '${STAMP_MOUNT}');",
+    to: "const c0 = nodes[0] ? nodes[0].parentElement : null; const reused = !!c0 && c0.getAttribute('${STAMP_ATTR}') === '${STAMP_MOUNT}';"
+  },
+  {
     id: 'M2 — an undeterminable popover is reported as closed',
     file: 'files-switcher.ts',
     from: "    return 'unknown';",
