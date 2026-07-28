@@ -90,8 +90,8 @@ const MUTATIONS = [
   {
     id: 'STATUS — the lock-free scrape is not re-attributed after the read',
     file: 'designer-controller.ts',
-    from: '      if (rootAfter === targetRoot) availableFiles = scraped;\n      else raced = true;',
-    to: '      availableFiles = scraped;'
+    from: '      if (rootAfter === targetRoot) {\n        availableFiles = scraped;\n        awaitingClarification = clarifying;\n      } else {\n        raced = true;\n      }',
+    to: '      availableFiles = scraped;\n      awaitingClarification = clarifying;'
   },
   {
     id: 'STATUS — the clarification read is not gated with the file scrape',
