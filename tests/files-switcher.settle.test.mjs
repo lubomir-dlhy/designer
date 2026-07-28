@@ -164,3 +164,15 @@ test('createSession stores a URL that can carry ?file=, which is why the above m
   assert.match(src, /upsertSession\(this\.key, \{ designUrl: url, name, fidelity/, 'designUrl is the raw current URL');
   assert.match(src, /await this\.openGuarded\(stored\.designUrl\)/, 'resumeSession opens it verbatim');
 });
+
+test('the lock-free status scrape is re-attributed, not trusted', () => {
+  // status bypasses the tab lock by design, so another key can move the shared
+  // tab between the URL sample and the scrape. The read must be attributed
+  // after the fact or discarded — never labelled 'visible-only' while showing
+  // another project's files.
+  const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  const body = src.slice(src.indexOf('async getStatus()'), src.indexOf('private async detectAwaitingClarification'));
+  assert.match(body, /rootAfter/, 'the project root is re-read AFTER the scrape');
+  assert.match(body, /if \(rootAfter === targetRoot\) availableFiles = scraped;/, 'the read is kept only if it can be attributed');
+  assert.match(body, /raced/, 'a discarded read is reported as raced, not as visible-only');
+});

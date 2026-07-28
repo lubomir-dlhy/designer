@@ -120,9 +120,11 @@ export interface SessionStatus {
    * How much `availableFiles` is worth. 'visible-only' = scraped from the page
    * without navigating, so an empty array may mean "panel closed", not "no
    * files"; 'other-project' = the shared tab is on a different project, so the
-   * list is deliberately empty; 'not-in-session' = no project open.
+   * list is deliberately empty; 'raced' = the tab moved between sampling the
+   * URL and scraping, so the read could not be attributed and was discarded;
+   * 'not-in-session' = no project open.
    */
-  filesScope: 'visible-only' | 'other-project' | 'not-in-session';
+  filesScope: 'visible-only' | 'other-project' | 'raced' | 'not-in-session';
   // True when the latest turn is Claude punting with the "Claude has some questions →"
   // teaser. The questions UI itself is ephemeral — it disappears on refresh and has no
   // stable DOM contract — so we don't try to scrape and answer them. Caller should
@@ -377,7 +379,20 @@ export class DesignerController {
     // already on the right project, and say so when it is not.
     const targetRoot = stored?.designUrl?.split('?')[0];
     const onThisKeysProject = !!targetRoot && url.split('?')[0] === targetRoot;
-    const availableFiles = inSession && onThisKeysProject ? await this._scrapeVisibleFiles() : [];
+    // Sample, scrape, RE-SAMPLE. Status is deliberately lock-free, and the
+    // scrape is a separate agent-browser process, so another key's locked
+    // operation can navigate the shared tab in between — which would report
+    // that project's filenames under this key's currentUrl. Attribute the read
+    // or discard it; never label a racing read 'visible-only'. Codex review,
+    // PR #134.
+    let availableFiles: string[] = [];
+    let raced = false;
+    if (inSession && onThisKeysProject) {
+      const scraped = await this._scrapeVisibleFiles();
+      const rootAfter = (await this.currentUrl()).split('?')[0];
+      if (rootAfter === targetRoot) availableFiles = scraped;
+      else raced = true;
+    }
     // The list is whatever the page is currently showing: it is empty both for a
     // project with no files and for one whose file panel is closed. Callers that
     // need an authoritative answer must use designer_list / handoff.
@@ -385,7 +400,9 @@ export class DesignerController {
       ? 'not-in-session'
       : !onThisKeysProject
         ? 'other-project'
-        : 'visible-only';
+        : raced
+          ? 'raced'
+          : 'visible-only';
     const awaitingClarification = inSession ? await this.detectAwaitingClarification() : false;
     return {
       key: this.key,

@@ -88,6 +88,12 @@ const MUTATIONS = [
     to: 'if (tabOnDeleted) {'
   },
   {
+    id: 'STATUS — the lock-free scrape is not re-attributed after the read',
+    file: 'designer-controller.ts',
+    from: '      if (rootAfter === targetRoot) availableFiles = scraped;\n      else raced = true;',
+    to: '      availableFiles = scraped;'
+  },
+  {
     id: 'HEALTH — a missing switcher trigger is skipped instead of failed',
     file: 'ui-anchors.ts',
     from: "        return {\n          ok: false,\n          detail: `files-switcher trigger (${SEL.files.switcherTrigger}) is absent on a project page — deleteFile and designer_files_delete cannot run`\n        };",
