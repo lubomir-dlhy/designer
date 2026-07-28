@@ -30,7 +30,7 @@ const MUTATIONS = [
   {
     id: 'M1/M4 — the reader stops detecting subtree reuse',
     file: 'files-switcher.ts',
-    from: "const reused = !!container && container.getAttribute('${STAMP_ATTR}') === '${STAMP_MOUNT}';",
+    from: "const reused = nodes.length > 0 && nodes.every((n) => n.getAttribute('${STAMP_ATTR}') === '${STAMP_MOUNT}');",
     to: 'const reused = false;'
   },
   {

@@ -1,8 +1,12 @@
 # ADR 0001: Safety for destructive UI automation comes from verification, not from the click mechanism
 
-- **Status:** Proposed
-- **Date:** 2026-07-26
+- **Status:** Accepted on merge of PR #134
+- **Date:** 2026-07-26 (decided) / 2026-07-28 (final revision)
 - **Deciders:** provi, Claude (live-probe evidence + adversarial plan review + /gate lenses)
+- **Note on status:** deliberately recorded as Accepted-on-merge rather than
+  `Proposed`, so merging PR #134 lands the decision in its final state and no
+  second merge is needed to flip it. If the PR is closed unmerged this file dies
+  with the branch.
 - **References:** PR #134, `docs/plans/2026-07-26-001-feat-files-delete-plan.md`,
   `files-switcher.ts`, `DesignerController.deleteFile` (`designer-controller.ts`),
   `scripts/e2e-files-delete.ts`
