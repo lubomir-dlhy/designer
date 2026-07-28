@@ -90,7 +90,7 @@ const MUTATIONS = [
   {
     id: 'STATUS — the lock-free scrape is not re-attributed after the read',
     file: 'designer-controller.ts',
-    from: '      if (rootAfter === targetRoot) {\n        availableFiles = scraped;\n        awaitingClarification = clarifying;\n      } else {\n        raced = true;\n      }',
+    from: '      if (rootAfter === targetRoot && driverEpoch() === epochBefore) {\n        availableFiles = scraped;\n        awaitingClarification = clarifying;\n      } else {\n        raced = true;\n      }',
     to: '      availableFiles = scraped;\n      awaitingClarification = clarifying;'
   },
   {
