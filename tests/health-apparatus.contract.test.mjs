@@ -394,6 +394,62 @@ test('CONSUMER_FILES covers every file that reads a selector key', () => {
   assert.deepEqual(missing, [], `CONSUMER_FILES omits selector readers: ${missing.join(', ')}`);
 });
 
+// --- the OAuth credential must actually authenticate ---
+
+test('an OAuth bearer token carries the beta header the API requires', async () => {
+  // The heal call had never once run: triage could not reach it while the
+  // patcher was blind, and the moment V2 made it reachable it would have 401'd.
+  // The SDK sends `Authorization: Bearer <token>` and nothing else for a
+  // caller-supplied authToken, but the API requires `anthropic-beta:
+  // oauth-2025-04-20` alongside it. Assert on the WIRE rather than on the
+  // source, because the failure is in what the SDK omits, not in what we wrote.
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+  const { OAUTH_API_BETA_HEADER } = await import('../scripts/auto-heal.ts');
+  const http = await import('node:http');
+
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push(req.headers);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: 'm', content: [], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    // Token auth — the configuration the workflow actually runs.
+    const byToken = new Anthropic({
+      authToken: 'test-oauth-token',
+      defaultHeaders: { 'anthropic-beta': OAUTH_API_BETA_HEADER },
+      baseURL,
+      maxRetries: 0
+    });
+    await byToken.messages.create({ model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }] });
+    assert.match(seen[0].authorization ?? '', /^Bearer /, 'token auth goes on Authorization, not x-api-key');
+    assert.equal(
+      seen[0]['anthropic-beta'],
+      OAUTH_API_BETA_HEADER,
+      'an OAuth bearer token without oauth-2025-04-20 is rejected by /v1/messages'
+    );
+
+    // API-key auth — the header is unnecessary and must not be required.
+    const byKey = new Anthropic({ apiKey: 'test-key', baseURL, maxRetries: 0 });
+    await byKey.messages.create({ model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }] });
+    assert.equal(seen[1]['x-api-key'], 'test-key');
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('auto-heal attaches the OAuth beta header only when the token is the credential', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/auto-heal.ts'), 'utf8');
+  assert.match(
+    src,
+    /authToken && !apiKey \? \{ defaultHeaders: \{ 'anthropic-beta': OAUTH_API_BETA_HEADER \} \}/,
+    'the header must ride on the token path, and not be sent when an API key wins resolution'
+  );
+});
+
 test('a fail in EITHER phase makes an any-state anchor failing', () => {
   // `any` anchors probe twice. A patch that breaks only the session phase must
   // not be excused by the home phase still passing.

@@ -339,6 +339,12 @@ const WHOLESALE_THRESHOLD = 5;
 const COOLDOWN_DAYS = 7;
 const CONFIDENCE_THRESHOLD = 0.7;
 const ANTHROPIC_MODEL = 'claude-opus-4-7';
+/**
+ * `anthropic-beta` value the API requires on authenticated requests made with an
+ * OAuth bearer token. Mirrors the SDK's own OAUTH_API_BETA_HEADER, which it
+ * exports but does not apply to a caller-supplied `authToken`.
+ */
+export const OAUTH_API_BETA_HEADER = 'oauth-2025-04-20';
 
 // Navigation targets for the fresh snapshot auto-heal captures on the runner
 // (daily-health no longer uploads page.html/page.png — see captureCurrentSnapshot).
@@ -993,7 +999,28 @@ async function heal(anchorId: string): Promise<void> {
   // 20-minute workflow timeout. SDK defaults are 10 min + 2 retries; combined
   // those can SIGKILL the job mid-revert. 90s timeout + 1 retry keeps worst
   // case to ~3 min and leaves room for the local re-probe.
-  const client = new Anthropic({ apiKey, authToken, timeout: 90_000, maxRetries: 1 });
+  // An OAuth bearer token needs the `oauth-2025-04-20` beta header on every
+  // authenticated API request. The SDK defines that constant itself
+  // (lib/credentials/types.ts: OAUTH_API_BETA_HEADER, "required on
+  // authenticated API requests using an OAuth bearer token") but only sends it
+  // on its own token-exchange path — `bearerAuth()` emits nothing but
+  // `Authorization: Bearer <token>`. So a client built from a bare `authToken`
+  // 401s on /v1/messages.
+  //
+  // This is why the heal step had never once succeeded: CLAUDE_CODE_OAUTH_TOKEN
+  // is the only credential configured, triage never reached `heal` (the patcher
+  // was blind), and when V2 finally made it reachable the very first call would
+  // have failed auth. Untestable from the outside, invisible from the inside.
+  //
+  // Sent only when the token is actually the credential in use: with an API key
+  // set, apiKey wins the SDK's resolution order and the header is pointless.
+  const client = new Anthropic({
+    apiKey,
+    authToken,
+    ...(authToken && !apiKey ? { defaultHeaders: { 'anthropic-beta': OAUTH_API_BETA_HEADER } } : {}),
+    timeout: 90_000,
+    maxRetries: 1
+  });
   const userContent: Anthropic.MessageParam['content'] = [{ type: 'text', text: promptText }];
   if (screenshot) {
     userContent.unshift({
