@@ -4,8 +4,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { resolveDoctorBin, probeVerdict, EXIT_CODE, navMatch } from '../scripts/ci-health.ts';
-import { findAnchor, canPatch } from '../scripts/anchor-patcher.ts';
-import { classifyCandidates, isStructurallyBlind, patchableAnchorIds } from '../scripts/auto-heal.ts';
+import {
+  findAnchor,
+  findAnchorTarget,
+  canPatch,
+  patchSelectorsJson,
+  readSelectorsKey,
+  isLegacyGroup,
+  legacyPathFor
+} from '../scripts/anchor-patcher.ts';
+import {
+  classifyCandidates,
+  isStructurallyBlind,
+  patchableAnchorIds,
+  findCollateralRegressions,
+  selectorKeyConsumers
+} from '../scripts/auto-heal.ts';
 import { orderedBranches, presenceSelector } from '../selectors.ts';
 import { UI_ANCHORS } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
@@ -121,23 +135,327 @@ test('an id failing shape validation is quarantined, never healed', () => {
   assert.deepEqual(c.eligible, []);
 });
 
-test('patchableAnchorIds reports reality — today the real anchors are all unpatchable', () => {
+test('patchableAnchorIds reports reality — every reported id resolves to a real target', () => {
   const src = fs.readFileSync(path.join(REPO_ROOT, 'ui-anchors.ts'), 'utf8');
+  const json = fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8');
   const ids = UI_ANCHORS.map((a) => a.id);
   const patchable = patchableAnchorIds(src, ids);
-  // Every reported id must genuinely resolve — no claiming coverage it lacks.
+
+  // No claiming coverage it lacks: every id reported patchable must resolve to
+  // a target that can actually be written — a literal with real offsets, or a
+  // selectors.json key that already holds a string.
   for (const id of patchable) {
-    assert.ok(findAnchor(src, id), `${id} reported patchable but findAnchor returned null`);
+    const t = findAnchorTarget(src, id);
+    assert.ok(t, `${id} reported patchable but findAnchorTarget returned null`);
+    if (t.kind === 'literal') {
+      assert.ok(t.literalEnd > t.literalStart, `${id}: literal span is empty`);
+    } else {
+      assert.equal(
+        typeof readSelectorsKey(json, t.path),
+        'string',
+        `${id} resolves to selectors.json ${t.path.join('.')}, which holds no string`
+      );
+    }
   }
-  // Documents the standing limitation this PR makes visible rather than hides:
-  // anchors read selectors from selectors.json (SEL.*), which the literal-only
-  // patcher cannot rewrite. If someone extends the patcher, this flips and the
-  // assertion below should be updated deliberately, not by accident.
-  assert.equal(
-    patchable.length,
-    0,
-    `patcher now covers ${patchable.join(', ')} — auto-heal is no longer fully blind; update this test and #129 item 0.`
+
+  // This assertion was `=== 0` until patcher V2 (#129 item 0.3): every anchor
+  // reads SEL.*, and the literal-only patcher could rewrite none of them, so
+  // auto-heal ran blind. V2 resolves SEL.* to its selectors.json key, so the
+  // count must now be non-zero — if it returns to 0, auto-heal has gone blind
+  // again and that is the alarm.
+  assert.ok(
+    patchable.length > 0,
+    'auto-heal can patch NOTHING — patcher V2 has regressed and every heal will no-op'
   );
+});
+
+test('the legacy branch is never the patch target', () => {
+  // checkWithLegacy(b, canonical, legacy, label): rewriting the legacy argument
+  // would erase the record of what the selector used to be, which is the only
+  // thing that lets a drifted page report `degraded` instead of `fail`.
+  const src = `
+    export const UI_ANCHORS = [
+      { id: 'x.legacy', category: 'home', description: 'd', requires: 'home',
+        check: async (b) => checkWithLegacy(b, SEL.home.createButton, SEL.homeLegacy?.createButton, 'x') }
+    ];`;
+  const t = findAnchorTarget(src, 'x.legacy');
+  assert.deepEqual(t, { kind: 'selectors-key', path: ['home', 'createButton'] });
+});
+
+test('a non-SEL object is not mistaken for a contract key', () => {
+  const src = `
+    export const UI_ANCHORS = [
+      { id: 'x.other', category: 'home', description: 'd', requires: 'home',
+        check: async (b) => ({ ok: await hasSelector(b, OTHER.home.creator) }) }
+    ];`;
+  assert.equal(findAnchorTarget(src, 'x.other'), null, 'only SEL.* is a selectors.json key');
+});
+
+test('complex checks stay unpatchable — there is no single selector to swap', () => {
+  const src = `
+    export const UI_ANCHORS = [
+      { id: 'x.walker', category: 'home', description: 'd', requires: 'home',
+        check: async (b) => ({ ok: await hasButtonMatching(b, /Create/i) }) },
+      { id: 'x.guarded', category: 'session', description: 'd', requires: 'session',
+        check: async (b, url) => { if (!/file=/.test(url)) return { ok: true, status: 'skip' };
+                                   return { ok: await hasSelector(b, SEL.composer.promptTextarea) }; } }
+    ];`;
+  assert.equal(findAnchorTarget(src, 'x.walker'), null);
+  assert.equal(findAnchorTarget(src, 'x.guarded'), null, 'a block body with a URL guard is not a plain selector check');
+});
+
+// --- patcher V2: writing selectors.json ---
+
+test('selectors.json is byte-identical under a JSON round-trip', () => {
+  // patchSelectorsJson works by parse -> mutate -> stringify. That is only
+  // safe-by-construction while this holds: if the file ever gains a different
+  // formatting, a patch would reformat the whole contract in the same commit
+  // and bury the one-line change auto-heal actually intended.
+  const raw = fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8');
+  assert.equal(JSON.stringify(JSON.parse(raw), null, 2) + '\n', raw);
+});
+
+test('patchSelectorsJson changes exactly the targeted key and nothing else', () => {
+  const raw = fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8');
+  const out = patchSelectorsJson(raw, ['home', 'creator'], '[data-testid="new-composer"]');
+  const before = JSON.parse(raw);
+  const after = JSON.parse(out);
+  assert.equal(after.home.creator, '[data-testid="new-composer"]');
+  before.home.creator = '[data-testid="new-composer"]';
+  assert.deepEqual(after, before, 'no other key may move');
+  assert.ok(out.endsWith('\n'), 'trailing newline preserved');
+});
+
+test('patchSelectorsJson fails closed on an absent or non-string key', () => {
+  const raw = fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8');
+  // Never invent a contract entry.
+  assert.throws(() => patchSelectorsJson(raw, ['home', 'noSuchKey'], 'x'), /absent|expected a string/);
+  // Never overwrite a nested object with a string.
+  assert.throws(() => patchSelectorsJson(raw, ['home'], 'x'), /expected a string/);
+  assert.throws(() => patchSelectorsJson(raw, [], 'x'), /empty key path/);
+});
+
+test('a quoted selector survives the round-trip intact', () => {
+  const raw = fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8');
+  const tricky = 'button.om-grid-tile:has(img[src*="/grid-thumbs/wireframe."])';
+  const out = patchSelectorsJson(raw, ['home', 'creator'], tricky);
+  assert.equal(JSON.parse(out).home.creator, tricky, 'double quotes must not corrupt the value');
+});
+
+// --- patcher V2: the collateral-regression gate ---
+
+const res = (id, status, phase) => ({ id, category: 'home', description: 'd', requires: 'any', status, phase });
+
+test('a patch that breaks a previously-working anchor is caught', () => {
+  const before = [res('target', 'fail'), res('other', 'ok')];
+  const after = [res('target', 'ok'), res('other', 'fail')];
+  assert.deepEqual(findCollateralRegressions(before, after, 'target'), ['other']);
+});
+
+test('the patched anchor recovering is not itself a regression', () => {
+  const before = [res('target', 'fail'), res('other', 'ok')];
+  const after = [res('target', 'ok'), res('other', 'ok')];
+  assert.deepEqual(findCollateralRegressions(before, after, 'target'), []);
+});
+
+test('an anchor that was already failing is not counted as collateral', () => {
+  // It was broken before the patch; blaming the patch for it would revert good
+  // heals whenever two anchors happened to be down at once.
+  const before = [res('target', 'fail'), res('other', 'fail')];
+  const after = [res('target', 'ok'), res('other', 'fail')];
+  assert.deepEqual(findCollateralRegressions(before, after, 'target'), []);
+});
+
+// NOTE: this file used to assert that ok -> skip is NOT counted, on the reading
+// that an inconclusive re-probe is absence of evidence. An adversarial probe
+// refuted it: `skip` is exactly how the anchors that exercise a key in
+// production report patch-induced breakage. The corrected rules are the two
+// tests directly below ("silenced into SKIP" / "ALREADY skipping").
+
+test('degraded counts as working on both sides', () => {
+  const before = [res('target', 'fail'), res('other', 'degraded')];
+  const after = [res('target', 'degraded'), res('other', 'fail')];
+  assert.deepEqual(findCollateralRegressions(before, after, 'target'), ['other'],
+    'degraded-before -> fail-after is still a break');
+});
+
+test('the PR names the other consumers of a patched key', () => {
+  // The collateral gate only sees what an ANCHOR asserts. Most keys are read by
+  // one anchor plus production, so the reviewer is the real backstop for those
+  // — they need to be told what else moved.
+  const files = { 'a.ts': 'await hasSelector(b, SEL.home.creator)', 'b.ts': 'this.selectors.home.creator', 'c.ts': 'nothing' };
+  const got = selectorKeyConsumers(['home', 'creator'], (f) => files[f] ?? null, ['a.ts', 'b.ts', 'c.ts']);
+  assert.equal(got.length, 2, 'both readers reported, the unrelated file omitted');
+  assert.match(got.join(' '), /a\.ts/);
+  assert.match(got.join(' '), /b\.ts/);
+});
+
+test('selectorKeyConsumers finds the real production readers of home.creator', () => {
+  // Against the actual repo: home.creator is read by exactly one anchor, but
+  // createSession waits on it too. That asymmetry is the documented limit of
+  // the collateral gate, so it must be true in practice, not just in a stub.
+  const got = selectorKeyConsumers(['home', 'creator'], (f) => {
+    try {
+      return fs.readFileSync(path.join(REPO_ROOT, f), 'utf8');
+    } catch {
+      return null;
+    }
+  });
+  assert.match(got.join(' '), /designer-controller\.ts/, 'production reads this key — a bad patch changes tool behaviour');
+});
+
+test('an anchor silenced into SKIP by the patch IS a regression', () => {
+  // The reason this flipped from "not counted" to "counted": `skip` is how the
+  // anchors that exercise a key in PRODUCTION report patch-induced breakage.
+  // Patch composer.promptTextarea to a present-but-wrong editable element and
+  // session.promptTextarea (a presence check) goes ok, while
+  // network.turnRpcContract fills the wrong element, never sees the send button
+  // enable, and returns {ok:true, status:'skip'}. Reading that as absence of
+  // evidence let the patch land while the real submit path was broken.
+  const before = [res('target', 'fail'), res('network.turnRpcContract', 'ok')];
+  const after = [res('target', 'ok'), res('network.turnRpcContract', 'skip')];
+  assert.deepEqual(findCollateralRegressions(before, after, 'target'), ['network.turnRpcContract']);
+});
+
+test('an anchor that was ALREADY skipping is still not counted', () => {
+  // The lenient rule survives only for anchors that were inconclusive before
+  // the patch — otherwise a phase skipped for unrelated reasons reverts a good
+  // heal every time.
+  const before = [res('target', 'fail'), res('other', 'skip')];
+  const after = [res('target', 'ok'), res('other', 'skip')];
+  assert.deepEqual(findCollateralRegressions(before, after, 'target'), []);
+});
+
+test('an anchor that vanished from the re-probe is counted, not ignored', () => {
+  const before = [res('target', 'fail'), res('other', 'ok')];
+  const after = [res('target', 'ok')];
+  assert.deepEqual(findCollateralRegressions(before, after, 'target'), ['other']);
+});
+
+// --- the legacy contract is refused structurally, not positionally ---
+
+test('a *Legacy key path is never a patch target', () => {
+  // Today nothing produces this shape — extractCanonicalSelectorArg reads
+  // argument index 1, the canonical one. That makes the "never erase the
+  // superseded selector" invariant depend on argument ORDER. Refuse on the key
+  // path itself so a reordering or a direct hasSelector(b, SEL.homeLegacy.x)
+  // cannot reach the writer.
+  const src = `
+    export const UI_ANCHORS = [
+      { id: 'x.direct', category: 'home', description: 'd', requires: 'home',
+        check: async (b) => ({ ok: await hasSelector(b, SEL.homeLegacy.createButton) }) }
+    ];`;
+  assert.equal(findAnchorTarget(src, 'x.direct'), null, 'legacy blocks are not patchable');
+  assert.equal(isLegacyGroup('homeLegacy'), true);
+  assert.equal(isLegacyGroup('home'), false);
+  assert.deepEqual(legacyPathFor(['home', 'createButton']), ['homeLegacy', 'createButton']);
+  assert.equal(legacyPathFor(['homeLegacy', 'createButton']), null);
+});
+
+// --- the theme's preventive check: human-facing claims must match reality ---
+
+test('no auto-heal message claims selectors.json anchors are unpatchable', () => {
+  // patcher V2 made that false, but the structural-blindness drift-PR comment
+  // still said it — sending a maintainer to build the capability that had just
+  // shipped, while the real remaining limit went unnamed. Blindness is the loud
+  // trustworthy signal; a wrong explanation degrades it.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'auto-heal.ts'), 'utf8');
+  assert.ok(
+    !/outside its reach/.test(src),
+    'auto-heal still tells the human that SEL.* anchors are outside the patcher — untrue since V2'
+  );
+});
+
+test('CONSUMER_FILES covers every file that reads a selector key', () => {
+  // The PR body's "also read by" line is the reviewer's primary signal for a
+  // single-reader key. A hardcoded list that misses a plain `SEL.a.b` reader is
+  // a different gap from the passed-down-object one the docstring admits.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'auto-heal.ts'), 'utf8');
+  const listed = new Set([...src.matchAll(/^\s*'([\w./-]+\.ts)',?$/gm)].map((m) => m[1]));
+  // Scan CODE, not prose: two-level access (`SEL.group.key`) with comments
+  // stripped. A one-level pattern also matches the literal "selectors.json",
+  // and anchor-patcher.ts documents key paths in comments without ever reading
+  // one. Done in Node rather than shelling to rg so CI does not need it.
+  const walk = (dir) =>
+    fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      if (['node_modules', 'dist', '.git', 'tests', 'artifacts'].includes(e.name)) return [];
+      const p = path.join(dir, e.name);
+      return e.isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
+    });
+  const readers = walk(REPO_ROOT)
+    .map((abs) => ({ rel: path.relative(REPO_ROOT, abs), src: fs.readFileSync(abs, 'utf8') }))
+    .filter(({ rel }) => rel !== 'selectors.ts')
+    .filter(({ src }) => {
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      return /\bSEL\.[a-z]\w*\.[a-z]|\bthis\.selectors\.[a-z]\w*\.[a-z]/.test(code);
+    })
+    .map(({ rel }) => rel);
+  const missing = readers.filter((f) => !listed.has(f));
+  assert.deepEqual(missing, [], `CONSUMER_FILES omits selector readers: ${missing.join(', ')}`);
+});
+
+// --- the OAuth credential must actually authenticate ---
+
+test('an OAuth bearer token carries the beta header the API requires', async () => {
+  // The heal call had never once run: triage could not reach it while the
+  // patcher was blind, and the moment V2 made it reachable it would have 401'd.
+  // The SDK sends `Authorization: Bearer <token>` and nothing else for a
+  // caller-supplied authToken, but the API requires `anthropic-beta:
+  // oauth-2025-04-20` alongside it. Assert on the WIRE rather than on the
+  // source, because the failure is in what the SDK omits, not in what we wrote.
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+  const { OAUTH_API_BETA_HEADER } = await import('../scripts/auto-heal.ts');
+  const http = await import('node:http');
+
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push(req.headers);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: 'm', content: [], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    // Token auth — the configuration the workflow actually runs.
+    const byToken = new Anthropic({
+      authToken: 'test-oauth-token',
+      defaultHeaders: { 'anthropic-beta': OAUTH_API_BETA_HEADER },
+      baseURL,
+      maxRetries: 0
+    });
+    await byToken.messages.create({ model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }] });
+    assert.match(seen[0].authorization ?? '', /^Bearer /, 'token auth goes on Authorization, not x-api-key');
+    assert.equal(
+      seen[0]['anthropic-beta'],
+      OAUTH_API_BETA_HEADER,
+      'an OAuth bearer token without oauth-2025-04-20 is rejected by /v1/messages'
+    );
+
+    // API-key auth — the header is unnecessary and must not be required.
+    const byKey = new Anthropic({ apiKey: 'test-key', baseURL, maxRetries: 0 });
+    await byKey.messages.create({ model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }] });
+    assert.equal(seen[1]['x-api-key'], 'test-key');
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('auto-heal attaches the OAuth beta header only when the token is the credential', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/auto-heal.ts'), 'utf8');
+  assert.match(
+    src,
+    /authToken && !apiKey \? \{ defaultHeaders: \{ 'anthropic-beta': OAUTH_API_BETA_HEADER \} \}/,
+    'the header must ride on the token path, and not be sent when an API key wins resolution'
+  );
+});
+
+test('a fail in EITHER phase makes an any-state anchor failing', () => {
+  // `any` anchors probe twice. A patch that breaks only the session phase must
+  // not be excused by the home phase still passing.
+  const before = [res('other', 'ok', 'home'), res('other', 'ok', 'session')];
+  const after = [res('other', 'ok', 'home'), res('other', 'fail', 'session')];
+  assert.deepEqual(findCollateralRegressions(before, after, 'target'), ['other']);
 });
 
 test('findAnchor rejects a selector-key anchor rather than silently mispatching', () => {
@@ -609,10 +927,28 @@ test('isFailing / isWorking classify every ProbeStatus, and degraded is working'
   assert.equal(isWorking('skip'), false);
 });
 
-test('auto-heal judges its re-probe with the shared predicate, not a literal !== ok', () => {
+test('auto-heal judges the PATCHED anchor strictly and every other anchor by the shared predicate', () => {
+  // This test used to assert the opposite for the patched anchor — that
+  // `status !== 'ok'` was the bug, because "degraded means the anchor WORKS via
+  // a superseded branch, so the patch did its job". That held while only
+  // `hasSelector`-shaped anchors were patchable: those return ok or fail and
+  // can never be degraded. Patcher V2 made checkWithLegacy anchors patchable,
+  // and for those `degraded` means the CANONICAL selector — the exact string
+  // auto-heal just wrote — is absent and only the legacy branch matched. So on
+  // the patched anchor `degraded` is proof the patch did NOT work, and
+  // accepting it shipped a selector the verification had just refuted.
+  //
+  // The two questions stayed different: `degraded` still counts as working for
+  // every other anchor in the collateral gate, where a neighbour running on its
+  // legacy branch is genuinely functional.
   const src = fs.readFileSync(path.join(REPO_ROOT, 'scripts/auto-heal.ts'), 'utf8');
-  assert.ok(!/status !== 'ok'/.test(src), "auto-heal still uses `status !== 'ok'` — degraded would revert a working patch");
-  assert.match(src, /isFailing\(r\.status\)/, 'auto-heal must consume the shared predicate');
+  assert.match(
+    src,
+    /entriesForAnchor\.filter\(\(r\) => r\.status !== 'ok'\)/,
+    'the patched anchor must require plain ok — degraded means the written canonical selector is absent'
+  );
+  assert.match(src, /isFailing\(r\.status\)/, 'every other anchor must still go through the shared predicate');
+  assert.match(src, /isWorking\(r\.status\)/, 'and through its dual, so widening ProbeStatus is a compile error');
 });
 
 test('a degraded run does not close the drift PR that documents the rot', () => {
