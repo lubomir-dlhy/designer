@@ -149,8 +149,14 @@ jobs:
         with:
           branch: health/auto-heal-${{ steps.heal.outputs.anchor-id }}-${{ steps.heal.outputs.date }}
           base: main
+          # Both patch targets. The selector lives in ui-anchors.ts only for
+          # anchors with an inline literal; every anchor that reads SEL.* is
+          # repaired in selectors.json instead (patcher V2, #129 item 0.3).
+          # Listing both is safe — create-pull-request commits only what changed,
+          # and auto-heal reverts the untouched file before this step runs.
           add-paths: |
             ui-anchors.ts
+            selectors.json
           commit-message: |
             chore(ui-anchors): auto-heal ${{ steps.heal.outputs.anchor-id }}
 
@@ -164,10 +170,12 @@ jobs:
             ## Auto-heal proposal
 
             - **Anchor**: `${{ steps.heal.outputs.anchor-id }}`
+            - **Patched**: `${{ steps.heal.outputs.patched-file }}`${{ steps.heal.outputs.selectors-key != '' && format(' at `{0}`', steps.heal.outputs.selectors-key) || '' }}
             - **Before**: `${{ steps.heal.outputs.old-selector }}`
             - **After**: `${{ steps.heal.outputs.new-selector }}`
             - **Confidence**: ${{ steps.heal.outputs.confidence }}
-            - **Local re-probe**: green after patch
+            - **Local re-probe**: patched anchor green, no previously-working anchor regressed
+            ${{ steps.heal.outputs.key-consumers != '' && format('- **This key is also read by**: {0} — best-effort textual scan, it under-reports keys reached through a passed-down object', steps.heal.outputs.key-consumers) || '' }}
             - **Originating drift PR**: ${{ steps.heal.outputs.drift-pr-number != '' && format('#{0}', steps.heal.outputs.drift-pr-number) || '(none found)' }}
             - **Triggered by run**: [daily-health #${{ github.event.workflow_run.id }}](${{ github.event.workflow_run.html_url }})
 
@@ -179,8 +187,16 @@ jobs:
 
             **Human review required.** This PR is NOT auto-merged. Verify the
             new selector matches the intended element before merging — auto-
-            heal validates that the *anchor probes green*, not that the
-            selector targets the *right* DOM node.
+            heal validates that the *anchor probes green* and that nothing else
+            broke, not that the selector targets the *right* DOM node. A
+            presence check is satisfied by the wrong element too.
+
+            **Read a `selectors.json` patch with more care than a `ui-anchors.ts`
+            one.** That file is the contract `createSession`, `listProjects`,
+            `deleteFile` and the sign-in verifier all resolve against, so this
+            change alters the tool's behaviour, not just what the daily probe
+            looks for. The no-collateral-regression check is evidence, not proof:
+            it only covers behaviour some anchor actually asserts.
 
       # Structural blindness is not a best-effort miss — it is a standing defect
       # in auto-heal itself: anchors are failing and the patcher cannot express a

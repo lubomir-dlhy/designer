@@ -13,9 +13,19 @@
 //   auto-heal heal <anchor-id>
 //     - Reads the anchor block + HTML snapshot + screenshot. Calls
 //       Anthropic API (claude-opus-4-7, tool-use). Bails on low confidence
-//       or brittle selectors. Patches ui-anchors.ts. Re-runs the local
-//       probe. If the patched anchor flips to ok, emits the step outputs
-//       the workflow uses to open a PR. Otherwise reverts the patch.
+//       or brittle selectors. Patches EITHER ui-anchors.ts (inline literal)
+//       OR selectors.json (anchors reading SEL.*) — anchor-patcher decides
+//       which from the check's AST. Re-runs the local probe. Emits the step
+//       outputs the workflow uses to open a PR only if the patched anchor
+//       recovers AND no previously-working anchor broke. Otherwise reverts.
+//
+// The selectors.json path (patcher V2, #129 item 0.3) is why the second half
+// of that condition exists. V1 rewrote a literal that only the health probe
+// read, so a bad patch produced a lying probe. V2 rewrites the contract the
+// controller's verbs read, so a bad patch changes what the tool DOES — and
+// "the anchor I aimed at went green" cannot detect that, since a presence
+// check is satisfied by the wrong element too. The whole-suite comparison
+// (findCollateralRegressions) is the gate that makes it acceptable.
 //
 // All failure modes exit 0 — auto-heal is best-effort. The drift PR opened
 // by daily-health stays as the human-readable diagnostic regardless.
@@ -34,7 +44,14 @@ import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { REPO_ROOT } from '../repo-root.ts';
 import { createBrowser } from '../browser.ts';
-import { canPatch, findAnchor, patchSelector } from './anchor-patcher.ts';
+import {
+  canPatch,
+  findAnchorTarget,
+  patchSelector,
+  patchSelectorsJson,
+  readSelectorsKey,
+  type AnchorTarget
+} from './anchor-patcher.ts';
 import { isFailing } from '../ui-anchors.ts';
 import { getSelectors } from '../selectors.ts';
 
@@ -102,9 +119,111 @@ export function patchableAnchorIds(anchorsSource: string, ids: string[]): string
   return ids.filter((id) => canPatch(anchorsSource, id));
 }
 
+/**
+ * Collapse an anchor's per-phase results into one verdict.
+ *
+ * `any`-state anchors probe in both the home and session phases, so one id can
+ * appear twice. A fail in either phase is a fail. All-skipped is `unknown` —
+ * "we did not really probe it", which must never be read as either outcome.
+ */
+function verdictById(results: ProbeResult[]): Map<string, 'working' | 'failing' | 'unknown'> {
+  const out = new Map<string, 'working' | 'failing' | 'unknown'>();
+  for (const r of results) {
+    const prev = out.get(r.id);
+    if (r.status === 'fail') out.set(r.id, 'failing');
+    else if (r.status === 'ok' || r.status === 'degraded') {
+      if (prev !== 'failing') out.set(r.id, 'working');
+    } else if (prev === undefined) out.set(r.id, 'unknown');
+  }
+  return out;
+}
+
+/**
+ * Anchors that were WORKING before the patch and are FAILING after it.
+ *
+ * This is the gate #129 item 0.3 asks for before a patch may touch
+ * selectors.json. A V1 patch rewrote one literal inside ui-anchors.ts, so its
+ * blast radius was the health probe. A V2 patch rewrites the contract the
+ * controller's verbs and the sign-in verifier read too — so "the anchor I aimed
+ * at went green" is no longer sufficient evidence that the patch was good. A
+ * selector that matches the wrong element can turn its own anchor green while
+ * breaking a neighbour that shares the key.
+ *
+ * The patched anchor is excluded: it has its own, stricter check. Anchors that
+ * became `unknown` (skipped) after the patch are NOT counted — an inconclusive
+ * re-probe is absence of evidence, and treating it as regression would revert
+ * good patches whenever a phase was skipped.
+ *
+ * Pure + exported so the decision is testable without a browser or an API key.
+ */
+export function findCollateralRegressions(
+  before: ProbeResult[],
+  after: ProbeResult[],
+  patchedId: string
+): string[] {
+  const was = verdictById(before);
+  const now = verdictById(after);
+  const out: string[] = [];
+  for (const [id, prior] of was) {
+    if (id === patchedId) continue;
+    if (prior === 'working' && now.get(id) === 'failing') out.push(id);
+  }
+  return out.sort();
+}
+
+/**
+ * Best-effort list of source files that read a given selectors.json key.
+ *
+ * Why this is reported rather than merely counted: the collateral-regression
+ * gate can only see behaviour some ANCHOR asserts, and most keys are read by
+ * exactly one anchor plus production. `home.creator` is the clean example — one
+ * anchor reads it, and `createSession` waits on it. A wrong-but-present selector
+ * would turn that single anchor green (auto-heal already proved it matches
+ * exactly one live element) while changing what project creation waits for, and
+ * nothing in the probe would object.
+ *
+ * So the gate is necessary, not sufficient, and the reviewer is the backstop.
+ * Naming the files that move tells them where to look.
+ *
+ * DELIBERATELY described as best-effort: this is a textual scan for the two
+ * access forms (`SEL.a.b` and `selectors.a.b`). It cannot see a key reached
+ * through a destructured or passed-down object — files-switcher.ts takes
+ * `f: Selectors['files']` and reads `f.switcherRow`, which this will miss. It
+ * under-reports; it must never be read as a complete reference list.
+ */
+export function selectorKeyConsumers(
+  keyPath: string[],
+  readFile: (relPath: string) => string | null,
+  files: string[] = CONSUMER_FILES
+): string[] {
+  const dotted = keyPath.join('.');
+  const needles = [`SEL.${dotted}`, `selectors.${dotted}`, `this.selectors.${dotted}`];
+  const out: string[] = [];
+  for (const f of files) {
+    const src = readFile(f);
+    if (!src) continue;
+    let hits = 0;
+    for (const n of needles) hits += src.split(n).length - 1;
+    // `this.selectors.x` also matches `selectors.x`; count the distinct sites once.
+    if (hits > 0) out.push(`${f} (${src.split(`SEL.${dotted}`).length - 1 || src.split(`selectors.${dotted}`).length - 1} site(s))`);
+  }
+  return out;
+}
+
+const CONSUMER_FILES = [
+  'ui-anchors.ts',
+  'designer-controller.ts',
+  'setup.ts',
+  'cli.ts',
+  'mcp-server.ts',
+  'files-switcher.ts',
+  'interstitials.ts'
+];
+
 const HEALTH_DIR = path.join(REPO_ROOT, 'artifacts', 'health');
 const STREAK_PATH = path.join(HEALTH_DIR, 'streak.json');
 const ANCHORS_PATH = path.join(REPO_ROOT, 'ui-anchors.ts');
+const SELECTORS_PATH = path.join(REPO_ROOT, 'selectors.json');
 const STREAK_THRESHOLD = 2;
 const WHOLESALE_THRESHOLD = 5;
 const COOLDOWN_DAYS = 7;
@@ -653,12 +772,34 @@ async function heal(anchorId: string): Promise<void> {
   }
 
   const anchorsSource = fs.readFileSync(ANCHORS_PATH, 'utf8');
-  const match = findAnchor(anchorsSource, anchorId);
-  if (!match) {
+  const target = findAnchorTarget(anchorsSource, anchorId);
+  if (!target) {
     console.log(`[auto-heal heal] ${anchorId} not patchable`);
     ghOutput('patched', 'false');
     ghOutput('reason', 'not-patchable');
     return;
+  }
+  // Which FILE this heal will write, and what the selector reads today. For a
+  // selectors.json key the current value comes from the shipped file, not from
+  // getSelectors() — a maintainer's ~/.designer/selectors.override.json would
+  // otherwise be treated as the baseline and silently committed into the repo.
+  const patchFile = target.kind === 'literal' ? ANCHORS_PATH : SELECTORS_PATH;
+  let currentSelector: string;
+  if (target.kind === 'literal') {
+    currentSelector = target.currentSelector;
+    console.log(`[auto-heal heal] ${anchorId} patches ui-anchors.ts (inline literal)`);
+  } else {
+    const keyed = readSelectorsKey(fs.readFileSync(SELECTORS_PATH, 'utf8'), target.path);
+    if (keyed == null) {
+      console.error(
+        `[auto-heal heal] ${anchorId} resolves to selectors.json ${target.path.join('.')}, which holds no string — contract and anchors disagree`
+      );
+      ghOutput('patched', 'false');
+      ghOutput('reason', 'selectors-key-missing');
+      process.exit(1);
+    }
+    currentSelector = keyed;
+    console.log(`[auto-heal heal] ${anchorId} patches selectors.json at ${target.path.join('.')}`);
   }
 
   const anchor = data.health?.results.find((r) => r.id === anchorId);
@@ -690,7 +831,7 @@ async function heal(anchorId: string): Promise<void> {
     `**Description:** ${anchor?.description ?? '(unknown)'}`,
     `**Required state:** ${anchor?.requires ?? '(unknown)'}`,
     `**Phase observed:** ${phaseHint}`,
-    `**Current selector:** \`${match.currentSelector}\``,
+    `**Current selector:** \`${currentSelector}\``,
     `**Failure detail:** ${failed.detail ?? '(no detail)'}`,
     ``,
     `# Anchor block (from ui-anchors.ts)`,
@@ -818,7 +959,7 @@ async function heal(anchorId: string): Promise<void> {
     ghOutput('reason', 'brittle-selector');
     return;
   }
-  if (newSelector === match.currentSelector) {
+  if (newSelector === currentSelector) {
     console.log(`[auto-heal heal] proposed selector identical to current — no-op`);
     ghOutput('patched', 'false');
     ghOutput('reason', 'identical-selector');
@@ -838,10 +979,23 @@ async function heal(anchorId: string): Promise<void> {
     return;
   }
 
-  // Apply the patch.
-  const patched = patchSelector(anchorsSource, anchorId, newSelector);
-  fs.writeFileSync(ANCHORS_PATH, patched);
-  console.log(`[auto-heal heal] patched ui-anchors.ts: ${match.currentSelector} -> ${newSelector}`);
+  // Apply the patch to whichever file actually holds this selector.
+  //
+  // V2 note: writing selectors.json changes what the controller's verbs and the
+  // sign-in verifier resolve, not just what the probe checks. The re-probe below
+  // is therefore checked TWICE — the patched anchor must recover, AND no anchor
+  // that was working beforehand may break (findCollateralRegressions).
+  if (target.kind === 'literal') {
+    fs.writeFileSync(ANCHORS_PATH, patchSelector(anchorsSource, anchorId, newSelector));
+  } else {
+    const before = fs.readFileSync(SELECTORS_PATH, 'utf8');
+    fs.writeFileSync(SELECTORS_PATH, patchSelectorsJson(before, target.path, newSelector));
+  }
+  console.log(
+    `[auto-heal heal] patched ${path.basename(patchFile)}` +
+      (target.kind === 'selectors-key' ? ` (${target.path.join('.')})` : '') +
+      `: ${currentSelector} -> ${newSelector}`
+  );
 
   // Re-probe locally. Hard timeout below the 20-min job ceiling so a hung
   // npm / orphaned agent-browser process cannot SIGKILL the heal step mid-
@@ -866,7 +1020,7 @@ async function heal(anchorId: string): Promise<void> {
   console.log(`[auto-heal heal] probe exit code: ${probe.status}${probe.signal ? ` (signal=${probe.signal})` : ''}`);
   if (probe.signal === 'SIGTERM' || probe.status === null) {
     console.error(`[auto-heal heal] re-probe timed out after 5 minutes — reverting`);
-    revertAnchors();
+    revertPatch();
     ghOutput('patched', 'false');
     ghOutput('reason', 're-probe-timeout');
     process.exit(1);
@@ -887,14 +1041,14 @@ async function heal(anchorId: string): Promise<void> {
   const reArtifact = reprobeArtifact(date);
   if (!reArtifact) {
     console.error(`[auto-heal heal] re-probe produced no artifact — reverting (infra failure)`);
-    revertAnchors();
+    revertPatch();
     ghOutput('patched', 'false');
     ghOutput('reason', 're-probe-no-artifact');
     process.exit(1);
   }
   if (reArtifact.data.reason === 'cdp-unreachable') {
     console.error(`[auto-heal heal] re-probe hit cdp-unreachable — cannot verify, reverting (infra failure)`);
-    revertAnchors();
+    revertPatch();
     ghOutput('patched', 'false');
     ghOutput('reason', 're-probe-cdp-unreachable');
     process.exit(1);
@@ -902,7 +1056,7 @@ async function heal(anchorId: string): Promise<void> {
   const reResults = reArtifact.data.health?.results;
   if (!Array.isArray(reResults) || reResults.length === 0) {
     console.error(`[auto-heal heal] re-probe artifact has no health.results — reverting (malformed)`);
-    revertAnchors();
+    revertPatch();
     ghOutput('patched', 'false');
     ghOutput('reason', 're-probe-no-results');
     process.exit(1);
@@ -910,7 +1064,7 @@ async function heal(anchorId: string): Promise<void> {
   const entriesForAnchor = reResults.filter((r) => r.id === anchorId);
   if (entriesForAnchor.length === 0) {
     console.log(`[auto-heal heal] re-probe did not probe ${anchorId} (phase mismatch?) — reverting`);
-    revertAnchors();
+    revertPatch();
     ghOutput('patched', 'false');
     ghOutput('reason', 're-probe-anchor-missing');
     return;
@@ -923,19 +1077,55 @@ async function heal(anchorId: string): Promise<void> {
     console.log(
       `[auto-heal heal] re-probe shows ${anchorId} still failing in ${nonOk.length}/${entriesForAnchor.length} phase(s) — reverting`
     );
-    revertAnchors();
+    revertPatch();
     ghOutput('patched', 'false');
     ghOutput('reason', 're-probe-still-failing');
     return;
   }
 
+  // The gate that makes patching the SHARED contract acceptable (#129 item 0.3).
+  //
+  // "My anchor went green" is a weak claim on its own: a selector can match the
+  // wrong element and still satisfy a presence check. When the patched key lives
+  // in selectors.json, every other consumer of that key moved too — so the real
+  // question is whether anything that worked before is broken now. Compare the
+  // ORIGINAL daily-health results against the re-probe and refuse the patch on
+  // any collateral break, whichever file was written.
+  const collateral = findCollateralRegressions(data.health?.results ?? [], reResults, anchorId);
+  if (collateral.length > 0) {
+    console.log(
+      `[auto-heal heal] ${anchorId} recovered, but the patch BROKE ${collateral.length} previously-working anchor(s): ${collateral.join(', ')} — reverting`
+    );
+    revertPatch();
+    ghOutput('patched', 'false');
+    ghOutput('reason', 're-probe-collateral-regression');
+    ghOutput('collateral-anchors', collateral.join(','));
+    return;
+  }
+
   console.log(
-    `[auto-heal heal] re-probe green for ${anchorId} in ${entriesForAnchor.length} phase(s) — emitting step outputs`
+    `[auto-heal heal] re-probe green for ${anchorId} in ${entriesForAnchor.length} phase(s), no collateral regressions — emitting step outputs`
   );
   const driftPr = findDriftPrNumber(date);
   ghOutput('patched', 'true');
   ghOutput('anchor-id', anchorId);
-  ghOutput('old-selector', match.currentSelector);
+  ghOutput('patched-file', path.relative(REPO_ROOT, patchFile));
+  ghOutput('selectors-key', target.kind === 'selectors-key' ? target.path.join('.') : '');
+  // Tell the reviewer what else this key moves. See selectorKeyConsumers for why
+  // the collateral gate alone does not cover a key only one anchor reads.
+  ghOutput(
+    'key-consumers',
+    target.kind === 'selectors-key'
+      ? selectorKeyConsumers(target.path, (f) => {
+          try {
+            return fs.readFileSync(path.join(REPO_ROOT, f), 'utf8');
+          } catch {
+            return null;
+          }
+        }).join(', ')
+      : ''
+  );
+  ghOutput("old-selector", currentSelector);
   ghOutput('new-selector', newSelector);
   ghOutput('confidence', String(confidence));
   ghOutput('rationale', rationale);
@@ -943,20 +1133,24 @@ async function heal(anchorId: string): Promise<void> {
   ghOutput('date', date);
 }
 
-function revertAnchors(): void {
-  // Loud-fail: if revert fails, the patched ui-anchors.ts persists on the
-  // self-hosted runner's workspace. actions/checkout@v4's clean-on-start
-  // covers the next workflow run, but until then any human ssh'd into the
-  // runner inherits the malicious state. Exit 1 — the workflow goes red,
-  // a human gets paged, the situation is visible.
+function revertPatch(): void {
+  // Reverts BOTH patch targets unconditionally, rather than only the file this
+  // run wrote. A revert that trusts its own bookkeeping about which file it
+  // touched is one bug away from leaving a patched contract on disk; asking git
+  // to restore both is the same cost and cannot be wrong.
+  //
+  // Loud-fail: if revert fails, a patched selectors.json / ui-anchors.ts
+  // persists on the self-hosted runner's workspace. actions/checkout's
+  // clean-on-start covers the next workflow run, but until then any human ssh'd
+  // into the runner inherits that state — and for selectors.json that means
+  // their local designer verbs resolve against an unreviewed selector. Exit 1 —
+  // the workflow goes red, a human gets paged, the situation is visible.
+  const targets = [ANCHORS_PATH, SELECTORS_PATH].map((p) => path.relative(REPO_ROOT, p));
   try {
-    execSync(`git checkout -- ${path.relative(REPO_ROOT, ANCHORS_PATH)}`, {
-      cwd: REPO_ROOT,
-      stdio: 'inherit'
-    });
+    execSync(`git checkout -- ${targets.join(' ')}`, { cwd: REPO_ROOT, stdio: 'inherit' });
   } catch (e) {
-    console.error(`[auto-heal heal] REVERT FAILED — ui-anchors.ts still patched on disk: ${(e as Error).message}`);
-    console.error(`[auto-heal heal] manual cleanup required on the runner: \`git -C ${REPO_ROOT} checkout -- ui-anchors.ts\``);
+    console.error(`[auto-heal heal] REVERT FAILED — ${targets.join(', ')} may still be patched on disk: ${(e as Error).message}`);
+    console.error(`[auto-heal heal] manual cleanup required on the runner: \`git -C ${REPO_ROOT} checkout -- ${targets.join(' ')}\``);
     process.exit(1);
   }
   // Cross-check: even after a "successful" git checkout exit code, verify
@@ -964,12 +1158,9 @@ function revertAnchors(): void {
   // permission-denied or read-only file would silently leave the patch in
   // place — only `git diff --quiet` proves the revert took effect.
   try {
-    execSync(`git diff --quiet -- ${path.relative(REPO_ROOT, ANCHORS_PATH)}`, {
-      cwd: REPO_ROOT,
-      stdio: 'pipe'
-    });
+    execSync(`git diff --quiet -- ${targets.join(' ')}`, { cwd: REPO_ROOT, stdio: 'pipe' });
   } catch {
-    console.error(`[auto-heal heal] REVERT INCOMPLETE — git checkout exited 0 but ui-anchors.ts is still dirty`);
+    console.error(`[auto-heal heal] REVERT INCOMPLETE — git checkout exited 0 but ${targets.join(' / ')} is still dirty`);
     process.exit(1);
   }
 }
