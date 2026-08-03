@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { resolveDoctorBin, probeVerdict, EXIT_CODE } from '../scripts/ci-health.ts';
+import { resolveDoctorBin, probeVerdict, EXIT_CODE, navMatch } from '../scripts/ci-health.ts';
 import { findAnchor, canPatch } from '../scripts/anchor-patcher.ts';
 import { classifyCandidates, isStructurallyBlind, patchableAnchorIds } from '../scripts/auto-heal.ts';
 import { orderedBranches, presenceSelector } from '../selectors.ts';
@@ -19,6 +19,34 @@ import { REPO_ROOT } from '../repo-root.ts';
 //     the inline string literals its AST patcher rewrites (#129 item 0).
 // The through-line: "never ran" was indistinguishable from "healthy". These
 // tests make each layer assert its own capability.
+
+// --- the artifact must say WHICH page it measured ---
+// Redaction maps every project UUID to the same `<redacted>` token, so a reader
+// of the committed artifact cannot tell a canary hit from a canary miss. That
+// ambiguity is why five green session phases could not be trusted once the
+// canary turned out to be deleted. navMatch is computed pre-redaction.
+
+test('navMatch distinguishes two different projects', () => {
+  const a = 'https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff';
+  const b = 'https://claude.ai/design/p/a9f7ac92-1cc3-480f-93b9-ea91d5ae55c5';
+  assert.equal(navMatch(a, b), false, 'landing on another project must not read as reaching the canary');
+  assert.equal(navMatch(a, a), true);
+});
+
+test('navMatch ignores query strings and case, which are not a different project', () => {
+  const bare = 'https://claude.ai/design/p/6C5115EC-b27c-46b8-a7d9-1b09df042eff';
+  const withFile = 'https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff?file=Page.html';
+  assert.equal(navMatch(bare, withFile), true, 'an opened file is the same project');
+});
+
+test('navMatch still decides the home phase, which has no /p/ segment', () => {
+  assert.equal(navMatch('https://claude.ai/design', 'https://claude.ai/design'), true);
+  assert.equal(navMatch('https://claude.ai/design', 'https://claude.ai/login?returnTo=%2Fdesign'), false);
+});
+
+test('a failed navigation (empty landedOn) never reads as a match', () => {
+  assert.equal(navMatch('https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff', ''), false);
+});
 
 // --- #130: the doctor spawn path ---
 

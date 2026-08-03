@@ -226,11 +226,42 @@ function scrubArtifact(s: string): string {
     .replace(/\/home\/[^\/\s"]+/g, '/home/<redacted>');
 }
 
-function scrubNav(n: { target: string; landedOn: string; error?: string } | null): typeof n {
-  if (!n) return n;
+/**
+ * Redaction collapses every project UUID to the same `<redacted>` token, so a
+ * scrubbed `{target, landedOn}` pair cannot answer the one question a reader
+ * asks first: did the probe actually reach the project it aimed at? Two
+ * different projects and one project read identically.
+ *
+ * That ambiguity is not hypothetical. The canary project was deleted while five
+ * daily runs reported session anchors green, and the artifact could not say
+ * whether those anchors had been probing the canary or whatever project the
+ * shared debug Chrome happened to be parked on. So compare BEFORE scrubbing and
+ * record the verdict as its own field — it leaks nothing the URL didn't already
+ * disclose, and `landedElsewhere` is exactly the signal that distinguishes
+ * "claude.ai drifted" from "the probe measured the wrong page".
+ */
+export function navMatch(target: string, landedOn: string): boolean {
+  const idOf = (u: string): string | null => {
+    const m = u.match(/\/design\/p\/([0-9a-f-]{8,})/i);
+    return m?.[1] ? m[1].toLowerCase() : null;
+  };
+  const a = idOf(target);
+  const b = idOf(landedOn);
+  // Both project URLs: same project or not. Otherwise fall back to comparing
+  // the path-only forms, so the home phase (no /p/ segment) still gets a verdict.
+  if (a && b) return a === b;
+  const pathOnly = (u: string): string => u.replace(/[?#].*$/, '').replace(/\/+$/, '');
+  return pathOnly(target) === pathOnly(landedOn);
+}
+
+function scrubNav(
+  n: { target: string; landedOn: string; error?: string } | null
+): (NonNullable<typeof n> & { landedElsewhere: boolean }) | null {
+  if (!n) return null;
   return {
     target: scrubArtifact(n.target),
     landedOn: scrubArtifact(n.landedOn),
+    landedElsewhere: !navMatch(n.target, n.landedOn),
     ...(n.error !== undefined ? { error: scrubArtifact(n.error) } : {})
   };
 }
@@ -498,6 +529,18 @@ async function main(): Promise<void> {
       const landedOn = (await browser.url().catch(() => '')) || '';
       sessionNav = { target: probeUrl, landedOn };
       console.log(`[ci-health] navigated to canary — landed=${landedOn}`);
+      // A silent redirect is the difference between "claude.ai drifted" and
+      // "we measured a different project". A deleted canary still answers on
+      // its own /design/p/<uuid> URL with a "Project not found" body, so the
+      // URL alone will not catch that — but a redirect elsewhere is caught
+      // here, and the readiness wait above already failed loudly for the
+      // not-found case. Warn rather than throw: the anchors' own verdicts
+      // remain the contract, this just stops them being read as canary truth.
+      if (!navMatch(probeUrl, landedOn)) {
+        console.log(
+          `::warning title=canary navigation landed elsewhere::session anchors did NOT probe DESIGNER_PROBE_PROJECT_URL — every session.* result below describes a different page. Fix the canary before reading them as claude.ai drift.`
+        );
+      }
     } catch (e) {
       sessionNav = { target: probeUrl, landedOn: '', error: (e as Error).message };
       console.log(`[ci-health] canary navigation failed — ${(e as Error).message}; session anchors will fail loudly`);
