@@ -152,13 +152,19 @@ jobs:
           # Both patch targets. The selector lives in ui-anchors.ts only for
           # anchors with an inline literal; every anchor that reads SEL.* is
           # repaired in selectors.json instead (patcher V2, #129 item 0.3).
-          # Listing both is safe — create-pull-request commits only what changed,
-          # and auto-heal reverts the untouched file before this step runs.
+          #
+          # Listing both is safe for a narrower reason than "the other one gets
+          # reverted" — it does not. Every revertPatch() call site is on a
+          # failure path, and this step runs only when patched == 'true'. The
+          # real guarantee is that heal() WRITES exactly one of the two, so the
+          # other is untouched and create-pull-request has nothing to commit for
+          # it. If a future change ever dirties both, this list would commit
+          # both under a message naming one anchor.
           add-paths: |
             ui-anchors.ts
             selectors.json
           commit-message: |
-            chore(ui-anchors): auto-heal ${{ steps.heal.outputs.anchor-id }}
+            chore(selectors): auto-heal ${{ steps.heal.outputs.anchor-id }} in ${{ steps.heal.outputs.patched-file }}
 
             Replaces selector for ${{ steps.heal.outputs.anchor-id }} from
             `${{ steps.heal.outputs.old-selector }}` to `${{ steps.heal.outputs.new-selector }}`.
@@ -174,8 +180,10 @@ jobs:
             - **Before**: `${{ steps.heal.outputs.old-selector }}`
             - **After**: `${{ steps.heal.outputs.new-selector }}`
             - **Confidence**: ${{ steps.heal.outputs.confidence }}
-            - **Local re-probe**: patched anchor green, no previously-working anchor regressed
+            - **Local re-probe**: patched anchor `ok` (not merely non-failing), and no anchor that was working beforehand regressed or went inconclusive
+            ${{ steps.heal.outputs.same-key-anchors != '' && format('- **Other anchors reading this key**: {0} — these are what the non-regression check could actually catch', steps.heal.outputs.same-key-anchors) || '- **Other anchors reading this key**: none. No other anchor reads this key, so the non-regression check could only have caught *second-order* breakage (an anchor that uses the element rather than just asserting it is present). Treat the reader list below as the primary review signal, not the re-probe.' }}
             ${{ steps.heal.outputs.key-consumers != '' && format('- **This key is also read by**: {0} — best-effort textual scan, it under-reports keys reached through a passed-down object', steps.heal.outputs.key-consumers) || '' }}
+            ${{ steps.heal.outputs.superseded-selector != '' && format('- **Superseded value NOT demoted**: `{0}` was replaced and is now gone. selectors.json''s contract is that a superseded canonical selector moves into `{1}` so a rolled-back page reports `degraded` instead of `fail`. auto-heal will not write two keys in one unverified patch — **please demote it by hand before merging.**', steps.heal.outputs.superseded-selector, steps.heal.outputs.legacy-key) || '' }}
             - **Originating drift PR**: ${{ steps.heal.outputs.drift-pr-number != '' && format('#{0}', steps.heal.outputs.drift-pr-number) || '(none found)' }}
             - **Triggered by run**: [daily-health #${{ github.event.workflow_run.id }}](${{ github.event.workflow_run.html_url }})
 
@@ -195,8 +203,33 @@ jobs:
             one.** That file is the contract `createSession`, `listProjects`,
             `deleteFile` and the sign-in verifier all resolve against, so this
             change alters the tool's behaviour, not just what the daily probe
-            looks for. The no-collateral-regression check is evidence, not proof:
-            it only covers behaviour some anchor actually asserts.
+            looks for.
+
+            **Do not read the non-regression check as verification.** It can only
+            see what some *other* anchor asserts. Measured against today's
+            registry, the 10 patchable anchors map to 10 distinct keys — no key
+            is read by two anchors — so for most patches its first-order coverage
+            is zero and its only reach is second-order (an anchor that *uses* the
+            element rather than asserting its presence). The reader list above is
+            the signal that actually tells you what this change moves.
+
+      # Unconditional restore. Every revertPatch() call site lives inside the
+      # heal process, so a SIGKILL from the 20-minute job ceiling — plausible:
+      # the re-probe alone allows 5 min, the Anthropic call ~3 min, plus npm ci
+      # and snapshot capture — skips all of them and leaves a patched
+      # selectors.json on the SHARED self-hosted runner. actions/checkout cleans
+      # on the next run, so the exposure window is up to 24h, during which any
+      # human on that machine has designer verbs resolving against an unreviewed
+      # selector. Runs after the PR step, which has already committed what it
+      # needed.
+      - name: Restore working tree
+        if: always()
+        run: |
+          git -C "$GITHUB_WORKSPACE" checkout -- ui-anchors.ts selectors.json || true
+          if ! git -C "$GITHUB_WORKSPACE" diff --quiet HEAD -- ui-anchors.ts selectors.json; then
+            echo "::error title=auto-heal left the working tree dirty::ui-anchors.ts or selectors.json still differs from HEAD on the runner after cleanup."
+            exit 1
+          fi
 
       # Structural blindness is not a best-effort miss — it is a standing defect
       # in auto-heal itself: anchors are failing and the patcher cannot express a

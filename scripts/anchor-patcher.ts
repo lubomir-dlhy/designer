@@ -264,7 +264,30 @@ function selectorsKeyPath(expr: ts.Expression): string[] | null {
     cursor = cursor.expression;
   }
   if (!ts.isIdentifier(cursor) || cursor.text !== 'SEL') return null;
-  return parts.length > 0 ? parts : null;
+  if (parts.length === 0) return null;
+  // Structural refusal of the legacy blocks, not a positional one.
+  //
+  // Today nothing produces a legacy target: extractCanonicalSelectorArg reads
+  // argument index 1 of checkWithLegacy, which is the canonical one. That means
+  // the "never rewrite the superseded selector" invariant currently rests on
+  // argument ORDER — reorder the parameters, or add a check shaped
+  // `hasSelector(b, SEL.homeLegacy?.createButton)`, and the patcher would
+  // happily erase the record that lets a rolled-back page report `degraded`
+  // instead of `fail`. Make the refusal a property of the key path itself.
+  if (isLegacyGroup(parts[0])) return null;
+  return parts;
+}
+
+/** `homeLegacy`, `loginLegacy`, `composerLegacy`, `filesLegacy` — the superseded-selector blocks. */
+export function isLegacyGroup(group: string | undefined): boolean {
+  return typeof group === 'string' && group.endsWith('Legacy');
+}
+
+/** The `*Legacy` block paired with a canonical group, e.g. `home` -> `homeLegacy`. */
+export function legacyPathFor(path: string[]): string[] | null {
+  if (path.length !== 2) return null;
+  const [group, leaf] = path as [string, string];
+  return isLegacyGroup(group) ? null : [`${group}Legacy`, leaf];
 }
 
 function detectQuote(literalText: string): "'" | '"' | '`' | null {
