@@ -157,8 +157,10 @@ interface ArtifactJson {
     results: ProbeResult[];
   };
   diagnostics?: { url: string; htmlBytes: number; screenshotPath?: string } | null;
-  canary?: { target: string; landedOn: string; error?: string } | null;
-  homeNav?: { target: string; landedOn: string; error?: string } | null;
+  // `landedElsewhere` (ci-health.navMatch) is true when the probe did not reach
+  // the URL it aimed at — the session results then describe some other page.
+  canary?: { target: string; landedOn: string; landedElsewhere?: boolean; error?: string } | null;
+  homeNav?: { target: string; landedOn: string; landedElsewhere?: boolean; error?: string } | null;
 }
 
 interface ProposeSelectorInput {

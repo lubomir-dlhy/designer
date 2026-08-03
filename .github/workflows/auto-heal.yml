@@ -130,10 +130,12 @@ jobs:
           # (installed by the official Claude Code GitHub App, see #20).
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Re-probe needs the same canary the original run probed. Keep this
-          # mirror of daily-health.yml's value in sync if you swap canaries
-          # — both workflows reference the same project URL by convention.
-          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05
+          # Re-probe needs the same canary the original run probed — verifying a
+          # patch against a different project proves nothing. This mirrors
+          # daily-health.yml's value, and `npm run preflight` now ASSERTS the two
+          # agree: they had drifted to two different (both deleted) projects
+          # while the comment claimed they were kept in sync by convention.
+          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/9a2066ca-e9e4-4972-a294-560092e6a216
           # Pipe the triage output through env (not `${{ }}` substitution into
           # the shell command body) so an anchor-id with unexpected characters
           # cannot inject. auto-heal.ts also re-validates the id via

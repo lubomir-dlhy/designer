@@ -188,15 +188,40 @@ async function probeRowMenu(
     return { ok: false, detail: `row actions did not reveal on hover (${SEL.files.rowMoreActions} not visible)` };
   }
 
+  // Open the menu the way PRODUCTION opens it: trusted click, then a synthetic
+  // fallback. deleteFile has had that fallback all along; this probe had only
+  // the trusted half, so when trusted clicks stopped actuating these controls
+  // the probe failed daily (#138-#143) while deletion kept working — a probe
+  // STRICTER than production, which is the PR #77 split running the other way.
+  // The synthetic click is safe here for the same reason clickTriggerExpr is:
+  // opening a menu is not destructive. Delete is still never clicked.
+  const readItems = async (): Promise<string[]> =>
+    (await b
+      .evalValue<string[]>(
+        `(() => Array.from(document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button'))
+           .map((e) => (e.textContent || '').trim()).filter(Boolean))()`
+      )
+      .catch(() => [] as string[])) || [];
+
   await b.click(moreSel).catch(() => null);
   await sleep(600);
-  const items = await b
-    .evalValue<string[]>(
-      `(() => Array.from(document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button'))
-         .map((e) => (e.textContent || '').trim()).filter(Boolean))()`
-    )
-    .catch(() => [] as string[]);
-  if (items.length === 0) return { ok: false, detail: 'row "More actions" opened no role=menu items' };
+  let items = await readItems();
+  let openedSynthetically = false;
+  if (items.length === 0) {
+    const res = await b
+      .evalValue<string>(
+        `(() => { const e = document.querySelector(${JSON.stringify(moreSel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`
+      )
+      .catch(() => 'error');
+    await sleep(800);
+    if (res === 'clicked') {
+      items = await readItems();
+      openedSynthetically = items.length > 0;
+    }
+  }
+  if (items.length === 0) {
+    return { ok: false, detail: 'row "More actions" opened no role=menu items (trusted click and synthetic fallback both)' };
+  }
   if (!items.includes(MENU_ITEM_DOWNLOAD)) {
     return { ok: false, detail: `row menu missing "${MENU_ITEM_DOWNLOAD}" (items: ${items.join(', ')})` };
   }
@@ -207,8 +232,9 @@ async function probeRowMenu(
   // deletion refused with 'menu-unavailable'. Run the real resolver — it only
   // stamps an attribute, it never clicks. #F9.
   const menuResolves = await b.evalValue<string>(stampMenuDeleteExpr()).catch(() => 'error');
+  const opener = openedSynthetically ? '; opened via the synthetic fallback (trusted click no-opped)' : '';
   if (menuResolves === 'stamped') {
-    return { ok: true, detail: `${entryCount} row(s); menu offers ${items.join(', ')}` };
+    return { ok: true, detail: `${entryCount} row(s); menu offers ${items.join(', ')}${opener}` };
   }
   if (items.includes(MENU_ITEM_DELETE)) {
     return {
@@ -223,7 +249,7 @@ async function probeRowMenu(
     return {
       ok: true,
       status: 'degraded',
-      detail: `single-page project — no "${MENU_ITEM_DELETE}" item offered (items: ${items.join(', ')})`
+      detail: `single-page project — no "${MENU_ITEM_DELETE}" item offered (items: ${items.join(', ')})${opener}`
     };
   }
   return { ok: false, detail: `row menu missing "${MENU_ITEM_DELETE}" (items: ${items.join(', ')})` };
@@ -431,6 +457,15 @@ export const UI_ANCHORS: AnchorDef[] = [
   // So the creation-type cards are selector anchors now, not text matchers. The
   // old home.nameInput anchor stays dropped (no equivalent). The cards remain off
   // the create path (they only set the Template pill) — drift sentinels only.
+  //
+  // 2026-08-01: the `carousel-type-*` testids were then removed outright (five
+  // consecutive drift PRs, #138-#143 — the home now renders zero
+  // [data-testid*=carousel] nodes). Re-keyed onto the one per-card identifier the
+  // renames do not touch: the thumbnail asset slug, `img.om-grid-thumb[src*=
+  // "/grid-thumbs/<kind>."]`. That slug reuses the dead testids' own vocabulary,
+  // so `prototype` still names the card whose visible label is now "Mobile app
+  // design". The dead testids move to homeLegacy, which makes a rollback read
+  // `degraded` instead of `fail`. See `_cards` in selectors.json for the capture.
   {
     id: 'home.creator',
     category: 'home',
@@ -441,16 +476,18 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'home.wireframeButton',
     category: 'home',
-    description: 'Wireframe creation-type card ([data-testid="carousel-type-wireframe"])',
+    description: 'Wireframe creation-type card (thumbnail slug /grid-thumbs/wireframe.)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.wireframeButton) })
+    check: async (b) =>
+      checkWithLegacy(b, SEL.home.wireframeButton, SEL.homeLegacy?.wireframeButton, 'home.wireframeButton')
   },
   {
     id: 'home.highFiButton',
     category: 'home',
-    description: 'Prototype creation-type card ([data-testid="carousel-type-prototype"])',
+    description: 'Prototype creation-type card (thumbnail slug /grid-thumbs/prototype.)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.highFiButton) })
+    check: async (b) =>
+      checkWithLegacy(b, SEL.home.highFiButton, SEL.homeLegacy?.highFiButton, 'home.highFiButton')
   },
   {
     id: 'home.createButton',
