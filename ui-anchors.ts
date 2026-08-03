@@ -431,6 +431,15 @@ export const UI_ANCHORS: AnchorDef[] = [
   // So the creation-type cards are selector anchors now, not text matchers. The
   // old home.nameInput anchor stays dropped (no equivalent). The cards remain off
   // the create path (they only set the Template pill) — drift sentinels only.
+  //
+  // 2026-08-01: the `carousel-type-*` testids were then removed outright (five
+  // consecutive drift PRs, #138-#143 — the home now renders zero
+  // [data-testid*=carousel] nodes). Re-keyed onto the one per-card identifier the
+  // renames do not touch: the thumbnail asset slug, `img.om-grid-thumb[src*=
+  // "/grid-thumbs/<kind>."]`. That slug reuses the dead testids' own vocabulary,
+  // so `prototype` still names the card whose visible label is now "Mobile app
+  // design". The dead testids move to homeLegacy, which makes a rollback read
+  // `degraded` instead of `fail`. See `_cards` in selectors.json for the capture.
   {
     id: 'home.creator',
     category: 'home',
@@ -441,16 +450,18 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'home.wireframeButton',
     category: 'home',
-    description: 'Wireframe creation-type card ([data-testid="carousel-type-wireframe"])',
+    description: 'Wireframe creation-type card (thumbnail slug /grid-thumbs/wireframe.)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.wireframeButton) })
+    check: async (b) =>
+      checkWithLegacy(b, SEL.home.wireframeButton, SEL.homeLegacy?.wireframeButton, 'home.wireframeButton')
   },
   {
     id: 'home.highFiButton',
     category: 'home',
-    description: 'Prototype creation-type card ([data-testid="carousel-type-prototype"])',
+    description: 'Prototype creation-type card (thumbnail slug /grid-thumbs/prototype.)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.highFiButton) })
+    check: async (b) =>
+      checkWithLegacy(b, SEL.home.highFiButton, SEL.homeLegacy?.highFiButton, 'home.highFiButton')
   },
   {
     id: 'home.createButton',

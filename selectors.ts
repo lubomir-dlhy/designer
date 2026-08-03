@@ -25,15 +25,18 @@ export interface Selectors {
     createButton?: string;
     projectsList?: string;
     projectCard?: string;
+    wireframeButton?: string;
+    highFiButton?: string;
   };
   composerLegacy?: { sendButton?: string };
   home: {
     creator: string;
     nameInput: string;
-    // Creation-type cards, keyed by data-testid. These were `*ButtonText` label
-    // literals until 2026-07: the labels churned three times ("Product prototype"
-    // → "Prototype" → "Mobile app design") while the testids never moved, so the
-    // contract is a selector now, not text to match.
+    // Creation-type cards. Twice re-keyed, each time onto whatever the product
+    // was NOT renaming: label literals → `carousel-type-<kind>` testids (2026-07)
+    // → the thumbnail asset slug `/grid-thumbs/<kind>.` (2026-08, when the
+    // testids were removed outright). The slug is the surviving name for a card
+    // whose label has now churned three times; see `_cards` in selectors.json.
     wireframeButton: string;
     highFiButton: string;
     createButton: string;
