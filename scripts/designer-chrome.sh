@@ -33,8 +33,21 @@ if curl -fs -o /dev/null "http://127.0.0.1:$PORT/json/version"; then
   exit 0
 fi
 
-if [ "$(uname -s)" = "Darwin" ]; then CHROME_PAT="Google Chrome"; QUIT_HINT="Quit existing Chrome (Cmd+Q) first"; else CHROME_PAT="chrome"; QUIT_HINT="Quit existing Chrome (or 'pkill chrome') first"; fi
-if pgrep -f "$CHROME_PAT" >/dev/null; then
+# Same probe shape as isChromeRunning() in cross-platform.ts (#114): on Linux
+# match the process NAME, because `pgrep -f chrome` scans the whole command line
+# — it warns on a stray chromedriver or a leftover chrome_crashpad, and misses a
+# real chromium (which has no "chrome" substring). Names truncate at 15 chars, so
+# chromium-browser is only ever visible as chromium-browse.
+if [ "$(uname -s)" = "Darwin" ]; then
+  CHROME_PAT="Google Chrome"
+  PGREP_MODE="-f"
+  QUIT_HINT="Quit existing Chrome (Cmd+Q) first"
+else
+  CHROME_PAT="chrome|chromium|chromium-browse|google-chrome"
+  PGREP_MODE="-x"
+  QUIT_HINT="Quit existing Chrome (or 'pkill chrome') first"
+fi
+if pgrep "$PGREP_MODE" "$CHROME_PAT" >/dev/null; then
   echo "[designer-chrome] WARNING: Chrome is already running." >&2
   echo "                  If it's NOT a debug-mode Chrome, the launched window may not get the debug port." >&2
   echo "                  $QUIT_HINT, or accept the risk and continue." >&2
