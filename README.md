@@ -37,6 +37,16 @@ git clone https://github.com/pro-vi/designer.git && cd designer
 npm install && ./bin/designer setup
 ```
 
+For this audited fork:
+
+```bash
+git clone https://github.com/lubomir-dlhy/designer.git
+cd designer
+npm ci
+npm test
+./bin/designer setup
+```
+
 ### What `designer setup` does
 
 1. Verify deps (lockfile-hash compare).
@@ -131,7 +141,7 @@ Fallback when the live URL's IDE chrome eats viewport. Requires a prior handoff.
 designer tasting --key <key>
 ```
 
-Writes `tasting.html` with variant tabs + 1/2/3 shortcuts + persistent notes, serves locally, opens the browser.
+Writes `tasting.html` with variant tabs + 1/2/3 shortcuts + persistent notes, serves it on loopback only (`127.0.0.1`), and opens the browser. The command prints the server PID; stop it with `kill <serverPid>` when you are finished (or end the corresponding Python process in Task Manager on Windows).
 
 ## Operations
 
