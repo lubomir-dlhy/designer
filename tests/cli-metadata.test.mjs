@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { mcpServerCommand } from '../setup.ts';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -86,4 +87,12 @@ test('the destructive e2e harness is not published', async () => {
     !files.some((p) => /e2e/.test(p)),
     'the package allowlist must exclude the destructive e2e harness'
   );
+});
+
+test('local setup registers an executable MCP command without a global install', () => {
+  assert.deepEqual(mcpServerCommand(true), ['designer', 'mcp', 'serve']);
+  const local = mcpServerCommand(false);
+  assert.equal(local[0], process.execPath);
+  assert.equal(local[1], path.join(root, 'bin', 'designer.mjs'));
+  assert.deepEqual(local.slice(2), ['mcp', 'serve']);
 });
