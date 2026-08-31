@@ -373,6 +373,12 @@ function step5Skill(): boolean {
   return true;
 }
 
+export function mcpServerCommand(installedAvailable: boolean): string[] {
+  return installedAvailable
+    ? ['designer', 'mcp', 'serve']
+    : [process.execPath, path.join(REPO_ROOT, 'bin', 'designer.mjs'), 'mcp', 'serve'];
+}
+
 function step6Mcp(port: string): boolean {
   const claudeBin = xspawnSync(WHICH, ['claude'], { stdio: 'pipe' });
   if (claudeBin.status !== 0) {
@@ -385,14 +391,18 @@ function step6Mcp(port: string): boolean {
     log('mcp', 'ok', 'Already registered.');
     return true;
   }
-  // Register by command name so Claude resolves the Bun-powered executable via
-  // PATH on every supported OS, without encoding a machine-specific path.
+  // Prefer the installed command. In a source checkout it may not exist on
+  // PATH, so fall back to the current Bun executable plus this package's
+  // launcher. That keeps `./bin/designer.mjs setup` usable without a global
+  // package install and works on Windows without relying on shebang handling.
   //
   // claude mcp add supports `-e KEY=VALUE` for env vars, which works on every
   // OS — replaces the Unix-only `env DESIGNER_CDP=X` prefix the prior version
   // used. We only emit it when the port is non-default to keep the config tidy.
   const envFlags = port === '9222' ? [] : ['-e', `DESIGNER_CDP=${port}`];
-  const cmd = ['mcp', 'add', '--scope', 'user', '--transport', 'stdio', ...envFlags, 'designer', '--', 'designer', 'mcp', 'serve'];
+  const installed = xspawnSync(WHICH, ['designer'], { stdio: 'pipe' });
+  const serverCommand = mcpServerCommand(installed.status === 0);
+  const cmd = ['mcp', 'add', '--scope', 'user', '--transport', 'stdio', ...envFlags, 'designer', '--', ...serverCommand];
   log('mcp', 'wait', `Registering: claude ${cmd.join(' ')}`);
   const reg = xspawnSync('claude', cmd, { stdio: 'inherit' });
   if (reg.status !== 0) {
