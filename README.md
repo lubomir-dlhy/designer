@@ -34,7 +34,7 @@ npm i -g @pro-vi/designer && designer setup
 
 # C. Hacking on it
 git clone https://github.com/pro-vi/designer.git && cd designer
-npm install && ./bin/designer setup
+npm install && ./bin/designer.mjs setup
 ```
 
 For this audited fork:
@@ -44,7 +44,7 @@ git clone https://github.com/lubomir-dlhy/designer.git
 cd designer
 npm ci
 npm test
-./bin/designer setup
+./bin/designer.mjs setup
 ```
 
 ### What `designer setup` does
