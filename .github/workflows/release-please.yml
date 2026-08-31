@@ -32,8 +32,8 @@ on:
 # Auth: npm Trusted Publishing (OIDC) — no NPM_TOKEN secret. Tokens expire
 # (the 0.3.8 publish 404'd on a 30-day-old token); the OIDC exchange mints a
 # short-lived credential per run instead. One-time registry-side setup:
-# npmjs.com → @pro-vi/designer → Settings → Trusted Publisher → GitHub
-# Actions, repo pro-vi/designer, workflow release-please.yml, publish allowed.
+# npmjs.com → @lubomir-dlhy/designer → Settings → Trusted Publisher → GitHub
+# Actions, repo lubomir-dlhy/designer, workflow release-please.yml, publish allowed.
 
 permissions:
   contents: write

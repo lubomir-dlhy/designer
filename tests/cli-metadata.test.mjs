@@ -96,3 +96,19 @@ test('local setup registers an executable MCP command without a global install',
   assert.equal(local[1], path.join(root, 'bin', 'designer.mjs'));
   assert.deepEqual(local.slice(2), ['mcp', 'serve']);
 });
+
+test('active package metadata and docs use the fork identity', async () => {
+  assert.equal(pkg.name, '@lubomir-dlhy/designer');
+  const identityFiles = [
+    'bun.lock',
+    'README.md',
+    'release-please-config.json',
+    'skills/designer-loop/SKILL.md',
+    '.github/workflows/release-please.yml'
+  ];
+  const upstreamScope = new RegExp('@pro' + '-vi');
+  for (const file of identityFiles) {
+    const contents = await readFile(path.join(root, file), 'utf8');
+    assert.doesNotMatch(contents, upstreamScope, `${file} must not restore the upstream package scope`);
+  }
+});

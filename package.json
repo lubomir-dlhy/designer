@@ -1,17 +1,17 @@
 {
-  "name": "@pro-vi/designer",
+  "name": "@lubomir-dlhy/designer",
   "version": "0.3.26",
   "type": "module",
   "description": "MCP + CLI for autonomous iteration of claude.ai/design — drives the design surface via agent-browser, downloads handoff bundles, and exposes a tasting harness for full-viewport variant comparison.",
   "license": "MIT",
   "author": "Provi Zhang",
-  "homepage": "https://github.com/pro-vi/designer",
+  "homepage": "https://github.com/lubomir-dlhy/designer",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pro-vi/designer.git"
+    "url": "git+https://github.com/lubomir-dlhy/designer.git"
   },
   "bugs": {
-    "url": "https://github.com/pro-vi/designer/issues"
+    "url": "https://github.com/lubomir-dlhy/designer/issues"
   },
   "keywords": [
     "claude",

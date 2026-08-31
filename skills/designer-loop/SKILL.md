@@ -211,7 +211,7 @@ Never override with "but best practice says..." — capture the tension in the d
 Check first: `designer_*` tools should appear in the tool list. If they don't:
 
 1. Ask the human whether they've installed the `designer` package. If yes, the MCP may have disconnected — `claude mcp list` will show the status.
-2. If they haven't set it up: `cd ~/Development/_projs/designer && ./bin/designer.mjs setup` (or after publish: `bun add --global @pro-vi/designer && designer setup`).
+2. If they haven't set it up: clone `https://github.com/lubomir-dlhy/designer`, run `./bin/designer.mjs setup`, or after publishing install it with `bun add --global @lubomir-dlhy/designer && designer setup`.
 3. If setup isn't possible in this session, tell the human the skill can't run and fall back to making the change directly (no variant exploration).
 
 The MCP auto-launches debug Chrome on first tool call if the dedicated profile exists. Re-runs of `designer setup` are idempotent.

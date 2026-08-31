@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "@pro-vi/designer",
+      "name": "@lubomir-dlhy/designer",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.120.0",
         "@modelcontextprotocol/sdk": "^1.26.0",

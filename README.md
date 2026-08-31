@@ -4,7 +4,7 @@ MCP + CLI that lets your coding agent drive **[claude.ai/design](https://claude.
 
 Human describes intent → agent surveys codebase and prompts Claude Design → hands you the URL → iterate → `designer_handoff` fetches the project export zip into your repo (`project/` design files + a regenerated `decision-record.md`).
 
-> **Status:** v0.3.14, early. macOS and Linux.
+> **Status:** v0.3.26, early. macOS and Linux.
 
 ## Stance
 
@@ -21,23 +21,7 @@ Human describes intent → agent surveys codebase and prompts Claude Design → 
 - [Bun 1.4+](https://bun.com/docs/installation), plus Google Chrome.
 - `agent-browser` on PATH: `bun add --global agent-browser` (or `brew install agent-browser`).
 
-### Three paths
-
-All land at `designer setup`.
-
-```bash
-# A. Trial — no install
-bunx -y @pro-vi/designer setup
-
-# B. Daily use
-bun add --global @pro-vi/designer && designer setup
-
-# C. Hacking on it
-git clone https://github.com/pro-vi/designer.git && cd designer
-bun install && ./bin/designer.mjs setup
-```
-
-For this audited fork:
+### Install from this fork
 
 ```bash
 git clone https://github.com/lubomir-dlhy/designer.git
@@ -47,9 +31,12 @@ bun test
 ./bin/designer.mjs setup
 ```
 
+The package name reserved for a future registry release is
+`@lubomir-dlhy/designer`. Until it is published, use the source checkout above.
+
 ### What `designer setup` does
 
-1. Verify deps (lockfile-hash compare).
+1. Verify Bun 1.4+ and synchronize dependencies from `bun.lock`.
 2. Check `agent-browser` on PATH.
 3. Ask you to quit a non-debug Chrome (polls until done).
 4. Launch debug Chrome (`--remote-debugging-port=9222`, profile at `~/.chrome-designer-profile/`).
@@ -63,17 +50,18 @@ Re-run anytime — idempotent. Verify with `designer doctor`.
 
 ```bash
 claude mcp add --scope user --transport stdio designer \
-  -- env DESIGNER_CDP=9222 bunx -y @pro-vi/designer mcp serve
+  -- "$(command -v bun)" "$PWD/bin/designer.mjs" mcp serve
 ```
 
-Still needs debug Chrome running (`bunx -y @pro-vi/designer setup` handles it).
+Run this from the cloned repository root. It still needs the dedicated debug
+Chrome, which `./bin/designer.mjs setup` launches.
 
 ### Notes
 
 - **Dedicated profile.** Chrome 136+ blocks `--remote-debugging-port` on the default profile. Login to `~/.chrome-designer-profile/` persists.
 - **Auto-launch.** MCP auto-launches debug Chrome on the first tool call if the profile exists.
 - **Bot detection.** Real Chrome + user-controlled login — not headless. Cloudflare + Google OAuth see a normal session. First login may trigger a Google new-device prompt.
-- **`DESIGNER_CDP=9222`** is embedded in the MCP registration. Only export it in your shell if you invoke the CLI directly.
+- **`DESIGNER_CDP=9222`** is the default. Export it only when using a different port or when you want the setting explicit for direct CLI calls.
 
 ## CLI
 
