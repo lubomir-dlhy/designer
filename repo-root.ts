@@ -2,11 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Walk up from this file's location until we find package.json. Lets the
-// package work in two layouts:
-//   - source mode (tsx): foo.ts at repo root → start = repo root → match
-//   - compiled mode (tsc → dist/): foo.js at dist/ → start = dist/ → walks up once → match
-// Resources like selectors.json and skills/ live at the repo root in both.
+// Walk up from this file's location until we find package.json. Bun executes
+// the TypeScript sources in place, while resources such as selectors.json and
+// skills/ live at the package root.
 //
 // `fileURLToPath` is required (not `new URL(...).pathname`) because on Windows
 // the URL pathname is `/C:/Users/...` which `path.join` cannot handle.

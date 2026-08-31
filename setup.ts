@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { REPO_ROOT } from './repo-root.ts';
 import { defaultChromeBin, isChromeRunning, xspawnSync, WHICH, IS_WIN, IS_MAC, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
@@ -128,49 +127,39 @@ async function pollUntil(
   return false;
 }
 
-function lockfileHash(p: string): string | null {
-  try {
-    return createHash('sha1').update(fs.readFileSync(p)).digest('hex');
-  } catch {
-    return null;
-  }
+function bunVersionSupported(version = Bun.version): boolean {
+  const [major = 0, minor = 0] = version.split('.').map((part) => Number.parseInt(part, 10));
+  return major > 1 || (major === 1 && minor >= 4);
 }
 
-async function step1NpmInstall(): Promise<boolean> {
+async function step1BunInstall(): Promise<boolean> {
+  if (!bunVersionSupported()) {
+    log('bun', 'fail', `Bun ${Bun.version} is too old; install Bun 1.4.0 or newer.`);
+    return false;
+  }
+  log('bun', 'ok', `Bun ${Bun.version}`);
   const nm = path.join(REPO_ROOT, 'node_modules');
-  const rootLock = path.join(REPO_ROOT, 'package-lock.json');
-  const innerLock = path.join(nm, '.package-lock.json');
-  // Installed mode: shipped tarball has no package-lock.json. Bun/pnpm/npx
-  // resolve deps outside the package dir, so don't inspect node_modules here —
-  // if we got this far, the package manager has done its job.
+  const rootLock = path.join(REPO_ROOT, 'bun.lock');
+  // Published packages do not ship the repository lockfile. Their package
+  // manager already installed dependencies before invoking this Bun entrypoint.
   if (!fs.existsSync(rootLock)) {
     log('deps', 'ok', 'installed-mode');
     return true;
   }
-  if (fs.existsSync(nm)) {
-    const a = lockfileHash(rootLock);
-    const b = lockfileHash(innerLock);
-    if (a && b && a === b) {
-      log('deps', 'ok', 'node_modules in sync with package-lock');
-      return true;
-    }
-    log('deps', 'wait', b ? 'lockfile mismatch; reinstalling...' : 'no inner lockfile; reinstalling to sync...');
-  } else {
-    log('deps', 'wait', 'running npm install...');
-  }
-  const r = xspawnSync('npm', ['install'], { cwd: REPO_ROOT, stdio: 'inherit' });
+  log('deps', 'wait', fs.existsSync(nm) ? 'verifying frozen Bun install...' : 'running frozen Bun install...');
+  const r = xspawnSync('bun', ['install', '--frozen-lockfile'], { cwd: REPO_ROOT, stdio: 'inherit' });
   if (r.status !== 0) {
-    log('deps', 'fail', `npm install exited ${r.status}`);
+    log('deps', 'fail', `bun install --frozen-lockfile exited ${r.status}`);
     return false;
   }
-  log('deps', 'ok', 'installed');
+  log('deps', 'ok', 'in sync with bun.lock');
   return true;
 }
 
 function step2AgentBrowser(): boolean {
   const r = xspawnSync('agent-browser', ['--version'], { stdio: 'pipe' });
   if (r.status !== 0) {
-    log('agent-browser', 'fail', 'not found on PATH. Install: npm i -g agent-browser');
+    log('agent-browser', 'fail', 'not found on PATH. Install: bun add --global agent-browser');
     return false;
   }
   log('agent-browser', 'ok', r.stdout?.toString().trim() || 'present');
@@ -396,10 +385,8 @@ function step6Mcp(port: string): boolean {
     log('mcp', 'ok', 'Already registered.');
     return true;
   }
-  // Register by command name (claude resolves via PATH; on Windows that's the
-  // npm-generated .cmd shim, on macOS/Linux the symlinked node script). This
-  // avoids encoding the absolute file path of a bash wrapper into the MCP
-  // config — which would break on Windows entirely.
+  // Register by command name so Claude resolves the Bun-powered executable via
+  // PATH on every supported OS, without encoding a machine-specific path.
   //
   // claude mcp add supports `-e KEY=VALUE` for env vars, which works on every
   // OS — replaces the Unix-only `env DESIGNER_CDP=X` prefix the prior version
@@ -419,7 +406,7 @@ function step6Mcp(port: string): boolean {
 export async function runSetup(): Promise<number> {
   console.log(`designer setup — port=${DEFAULT_PORT}, profile=${PROFILE}\n`);
 
-  if (!(await step1NpmInstall())) return 1;
+  if (!(await step1BunInstall())) return 1;
   if (!step2AgentBrowser()) return 1;
   if (!(await step3Chrome(DEFAULT_PORT))) return 1;
   if (!(await step4SignIn(DEFAULT_PORT))) return 1;
@@ -427,7 +414,7 @@ export async function runSetup(): Promise<number> {
   if (!step6Mcp(DEFAULT_PORT)) return 1;
 
   console.log('\n✓ designer is ready. Verify:  designer doctor');
-  console.log(`  (or: DESIGNER_CDP=${DEFAULT_PORT} tsx cli.ts doctor)`);
+  console.log(`  (or: DESIGNER_CDP=${DEFAULT_PORT} bun cli.ts doctor)`);
   if (!process.env.DESIGNER_CDP) {
     console.log(`\nTip: export DESIGNER_CDP=${DEFAULT_PORT} in your shell rc if you'll invoke the CLI directly (MCP callers don't need this).`);
   }

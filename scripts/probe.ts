@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env bun
 import { createBrowser } from '../browser.ts';
 
 const cmd = process.argv[2];

@@ -65,11 +65,18 @@ jobs:
         with:
           ref: ${{ inputs.publish-tag || steps.release.outputs.tag_name }}
 
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: steps.release.outputs.release_created || inputs.publish-tag
+        with:
+          bun-version: '1.4.0'
+
+      # npm Trusted Publishing currently performs the OIDC exchange through the
+      # npm CLI. Bun owns installation, scripts, tests, and packing; Node/npm are
+      # retained here only for the final credential-less registry publish.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         if: steps.release.outputs.release_created || inputs.publish-tag
         with:
-          node-version-file: '.nvmrc'
-          cache: 'npm'
+          node-version: '22'
           # No registry-url: setup-node would write an .npmrc that references
           # $NODE_AUTH_TOKEN, and npm hard-fails on unset env vars in config.
           # Trusted publishing needs no token; default registry is npmjs.
@@ -80,20 +87,20 @@ jobs:
         run: npm install -g npm@^11.5.1
 
       - if: steps.release.outputs.release_created || inputs.publish-tag
-        run: npm ci --no-audit --no-fund
+        run: bun ci
 
-      # The package's prepack hook runs check + build during `npm publish`,
+      # The package's prepack hook runs the typecheck during `npm publish`,
       # but we run them explicitly here so a failure surfaces in a named step
       # rather than buried in npm publish's output.
       - if: steps.release.outputs.release_created || inputs.publish-tag
-        run: npm run check
+        run: bun run check
       - if: steps.release.outputs.release_created || inputs.publish-tag
-        run: npm run build
+        run: bun test
 
       - name: Verify version matches tag
         if: steps.release.outputs.release_created || inputs.publish-tag
         run: |
-          PKG_V=$(node -p "require('./package.json').version")
+          PKG_V=$(bun -p "require('./package.json').version")
           TAG="${{ inputs.publish-tag || steps.release.outputs.tag_name }}"
           TAG=${TAG#v}
           if [ "$PKG_V" != "$TAG" ]; then

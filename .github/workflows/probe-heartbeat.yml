@@ -5,7 +5,7 @@ name: probe-heartbeat
 # The daily-health job runs on a SELF-HOSTED Mac mini runner. If that box is down
 # (asleep, or awaiting a FileVault login after a power outage) or its runner is
 # offline, the probe simply never fires — a silent gap no other signal catches. And
-# if the probe's ENVIRONMENT is broken (debug Chrome down / Node < 22 / canary gone),
+# if the probe's ENVIRONMENT is broken (debug Chrome down / Bun < 1.4 / canary gone),
 # its preflight fails the job red. This workflow runs on a GitHub-HOSTED runner —
 # independent of the Mac mini — and FAILS (which emails the repo owner via the
 # default Actions failure notification) when the latest daily-health run is stale or
@@ -60,7 +60,7 @@ jobs:
             fail=1
           fi
           if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
-            echo "::error::latest daily-health run concluded '$conclusion' — the probe ENVIRONMENT is broken (debug Chrome down / Node < 22 / canary project gone), NOT claude.ai UI drift. See: $url"
+            echo "::error::latest daily-health run concluded '$conclusion' — the probe ENVIRONMENT is broken (debug Chrome down / Bun < 1.4 / canary project gone), NOT claude.ai UI drift. See: $url"
             fail=1
           fi
 

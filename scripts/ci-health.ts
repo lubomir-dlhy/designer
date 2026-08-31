@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env bun
 // Daily-health orchestrator. Invoked by .github/workflows/daily-health.yml on
 // the self-hosted Mac mini runner where real Chrome + the dedicated profile
 // live. Combines `designer doctor` (tooling state) + `designer health` (UI
@@ -78,7 +78,7 @@ function runDoctor(): DoctorRun {
     // artifact so "never ran" can never again read the same as "ran and was
     // unhappy" — that ambiguity is what hid this bug for two months.
     //
-    // Scrubbed HERE rather than at payload-assembly time, because Node embeds the
+    // Scrubbed HERE rather than at payload-assembly time, because runtimes embed the
     // absolute executable path in spawn errors ("spawnSync /Users/<name>/.../bin/
     // designer ENOENT") and this string reaches THREE public sinks: the
     // world-downloadable artifact, the run summary line, and the ::warning
@@ -163,7 +163,7 @@ export function probeVerdict(input: { anchorFail: boolean; doctorSpawnError: str
   // 'fail'. An earlier revision of this comment claimed it fired routinely after
   // an ensureCdp relaunch; that was wrong, and this corrects it.
   //
-  // Doctor's six real 'fail' branches: node_modules missing, agent-browser
+  // Doctor's real 'fail' branches: Bun/dependencies missing, agent-browser
   // missing, selectors.json missing, CDP HTTP error, signed-out, MCP
   // registration. Only the LAST is orthogonal to whether this probe is valid,
   // and the rest are already covered without the exit code — signed-out fails the
@@ -671,7 +671,7 @@ async function main(): Promise<void> {
 // partly because nothing here could be exercised without a browser.
 // realpath BOTH sides: import.meta.url is already resolved through symlinks, so
 // comparing it to a raw argv[1] makes the guard silently false under a symlinked
-// checkout (or an npm-linked bin) — the script would then be imported-but-never-run.
+// checkout (or a package-manager-linked bin) — the script would then be imported-but-never-run.
 // Latent today (both workflows invoke by relative path), cheap to make robust.
 const entry = process.argv[1] ? fs.realpathSync(process.argv[1]) : '';
 const invokedDirectly = entry !== '' && fs.realpathSync(fileURLToPath(import.meta.url)) === entry;

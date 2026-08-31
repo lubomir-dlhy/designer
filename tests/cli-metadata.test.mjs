@@ -12,7 +12,7 @@ const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 
 async function runDesigner(args) {
   try {
-    const { stdout, stderr } = await execFileAsync(process.execPath, ['dist/cli.js', ...args], { cwd: root });
+    const { stdout, stderr } = await execFileAsync(process.execPath, ['bin/designer.mjs', ...args], { cwd: root });
     return { code: 0, stdout, stderr };
   } catch (error) {
     return {
@@ -81,9 +81,9 @@ test('a destructive verb is dry-run by default (files-delete needs --yes)', asyn
 // This is a public package. A harness that creates and deletes real user
 // projects has no business inside it, however well gated.
 test('the destructive e2e harness is not published', async () => {
-  const cfg = JSON.parse(await readFile(path.join(root, 'tsconfig.build.json'), 'utf8'));
+  const files = pkg.files ?? [];
   assert.ok(
-    (cfg.exclude ?? []).some((p) => /e2e/.test(p)),
-    'the build must exclude the e2e harness so it never reaches dist/ (and therefore npm)'
+    !files.some((p) => /e2e/.test(p)),
+    'the package allowlist must exclude the destructive e2e harness'
   );
 });

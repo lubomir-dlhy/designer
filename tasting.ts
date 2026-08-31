@@ -1,19 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { IS_WIN, IS_MAC, xspawn, xspawnSync } from './cross-platform.ts';
-
-// Pick an available Python launcher for this OS.
-// Windows ships with `py` (the launcher) and may have `python` in PATH.
-// macOS/Linux typically have `python3`.
-function findPython(): string | null {
-  const candidates = IS_WIN ? ['py', 'python', 'python3'] : ['python3', 'python'];
-  for (const c of candidates) {
-    const r = xspawnSync(c, ['--version'], { stdio: 'pipe' });
-    if (r.status === 0) return c;
-  }
-  return null;
-}
+import { fileURLToPath } from 'node:url';
+import { IS_WIN, IS_MAC } from './cross-platform.ts';
 
 // Cross-platform "open this URL in the user's default browser".
 function openUrl(url: string): void {
@@ -109,7 +98,7 @@ function renderTastingHtml({ variants, title }: { variants: Array<{ name: string
   // Parent-document listener handles keys when focus is on the bar/notes/body.
   document.addEventListener('keydown', onKey);
   // Iframe content captures keys when the user has interacted with the variant.
-  // Same-origin (we serve via http.server on the same port) so we can reach in.
+  // Same-origin (the Bun server serves every file on one origin) so we can reach in.
   stage.addEventListener('load', () => {
     try { stage.contentDocument && stage.contentDocument.addEventListener('keydown', onKey); } catch {}
   });
@@ -126,11 +115,38 @@ function escapeHtml(s: string): string {
 const servers = new Map<string, { port: number; pid: number }>();
 const LOOPBACK_HOST = '127.0.0.1';
 
-// Keep the preview private to this machine. Python's http.server binds to every
-// network interface when --bind is omitted, which can expose exported designs
-// to other hosts on the same network.
-export function tastingServerArgs(port: number): string[] {
-  return ['-m', 'http.server', '--bind', LOOPBACK_HOST, String(port)];
+export function tastingServerArgs(projectDir: string, port: number): string[] {
+  return [fileURLToPath(import.meta.url), '--serve', projectDir, String(port)];
+}
+
+export async function resolveTastingFile(projectDir: string, requestPath: string): Promise<string | null> {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(requestPath);
+  } catch {
+    return null;
+  }
+  const root = await fs.promises.realpath(projectDir).catch(() => null);
+  if (!root) return null;
+  const rel = decoded.replace(/^\/+/, '') || 'tasting.html';
+  const candidate = path.resolve(root, rel);
+  if (candidate !== root && !candidate.startsWith(root + path.sep)) return null;
+  const real = await fs.promises.realpath(candidate).catch(() => null);
+  if (!real || (real !== root && !real.startsWith(root + path.sep))) return null;
+  const stat = await fs.promises.stat(real).catch(() => null);
+  return stat?.isFile() ? real : null;
+}
+
+async function runTastingServer(projectDir: string, port: number): Promise<void> {
+  const server = Bun.serve({
+    hostname: LOOPBACK_HOST,
+    port,
+    async fetch(req) {
+      const file = await resolveTastingFile(projectDir, new URL(req.url).pathname);
+      return file ? new Response(Bun.file(file)) : new Response('Not found', { status: 404 });
+    }
+  });
+  console.log(`[tasting] serving ${projectDir} at ${server.url}`);
 }
 
 export async function serveAndOpen(
@@ -138,12 +154,7 @@ export async function serveAndOpen(
   { file = 'tasting.html', port }: { file?: string; port?: number } = {}
 ): Promise<{ url: string; port: number; pid: number }> {
   const chosenPort = port || (await pickFreePort(8765));
-  const python = findPython();
-  if (!python) {
-    throw new Error('tasting requires Python 3. Install python3 (macOS/Linux) or Python 3 from python.org (Windows).');
-  }
-  const child: ChildProcess = xspawn(python, tastingServerArgs(chosenPort), {
-    cwd: projectDir,
+  const child: ChildProcess = spawn(process.execPath, tastingServerArgs(projectDir, chosenPort), {
     stdio: 'ignore',
     detached: true
   });
@@ -173,4 +184,13 @@ async function pickFreePort(start: number): Promise<number> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+if (import.meta.main && process.argv[2] === '--serve') {
+  const projectDir = process.argv[3];
+  const port = Number(process.argv[4]);
+  if (!projectDir || !Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error('usage: bun tasting.ts --serve <projectDir> <port>');
+  }
+  await runTastingServer(projectDir, port);
 }

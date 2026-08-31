@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Clean-room install smoke. Packs the current repo, installs the tarball into
-# a stock node:22 container with no host node_modules in scope, and asserts the
+# a stock Bun 1.4 container with no host node_modules in scope, and asserts the
 # bin runs end-to-end (help text + the parts of `doctor` that don't need Chrome).
 #
 # Detects fragility before publish: missing files in package.json, ESM ext bugs,
@@ -13,28 +13,31 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-DOCKER_IMAGE="${DOCKER_IMAGE:-node:22}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-oven/bun:1.4.0}"
 WORK_HOST="$(mktemp -d -t designer-smoke-XXXXXX)"
 trap 'rm -rf "$WORK_HOST"' EXIT
 
 echo "[smoke] Packing tarball..."
-TARBALL="$(npm pack --silent | tail -n1)"
+TARBALL="$(bun pm pack --quiet | tail -n1)"
 mv "$TARBALL" "$WORK_HOST/$TARBALL"
 echo "[smoke] Tarball: $WORK_HOST/$TARBALL"
 
-# The pre-pack hook (prepack: tsc check + build) must have populated dist/.
-# Validate before we hand the bytes to Docker — failing here gives a clearer
-# error than a downstream "cannot find module" inside the container.
+# Bun executes the packaged TypeScript source directly. Validate the source
+# entrypoint is present and the destructive e2e harness is absent before Docker.
 #
 # We capture tar's output to a file rather than piping into grep -q, because
 # `set -o pipefail` + grep -q's early exit causes SIGPIPE on tar, which makes
 # the pipeline look like a failure even on a successful match.
 TAR_LIST="$WORK_HOST/tar-list.txt"
 tar tzf "$WORK_HOST/$TARBALL" > "$TAR_LIST"
-if ! grep -q '^package/dist/cli\.js$' "$TAR_LIST"; then
-  echo "[smoke] FAIL: dist/cli.js missing from tarball. Did 'npm run build' succeed?" >&2
+if ! grep -q '^package/cli\.ts$' "$TAR_LIST"; then
+  echo "[smoke] FAIL: cli.ts missing from tarball." >&2
   echo "[smoke] tarball contents:" >&2
   sed 's/^/  /' "$TAR_LIST" >&2
+  exit 1
+fi
+if grep -q 'e2e-files-delete' "$TAR_LIST"; then
+  echo "[smoke] FAIL: destructive e2e harness was included in the tarball." >&2
   exit 1
 fi
 
@@ -47,9 +50,9 @@ docker run --rm \
   "$DOCKER_IMAGE" \
   bash -euo pipefail -c '
     cp /in/'"$TARBALL"' ./pkg.tgz
-    npm init -y >/dev/null
+    bun init -y >/dev/null
     echo "[smoke] Installing tarball..."
-    npm install --no-audit --no-fund --omit=optional ./pkg.tgz
+    bun add --no-save ./pkg.tgz
     BIN=./node_modules/.bin/designer
     test -x "$BIN" || { echo "[smoke] FAIL: bin not present at $BIN"; exit 1; }
     echo "[smoke] Running designer --help..."

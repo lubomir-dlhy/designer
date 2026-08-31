@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env bun
 // Trace spike: record CDP network traffic from the claude.ai/design tab while
 // scenarios run, to learn how the surface streams generation traffic. Output
 // grounds the future network-first run-state observer. See cdp-trace.ts.

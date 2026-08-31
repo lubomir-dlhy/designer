@@ -18,8 +18,8 @@ Human describes intent → agent surveys codebase and prompts Claude Design → 
 
 ### Prerequisites
 
-- macOS, Node 22+ (uses the native global `WebSocket` — no `ws` dep), Google Chrome at `/Applications/Google Chrome.app`.
-- `agent-browser` on PATH: `npm i -g agent-browser` (or `brew install agent-browser`).
+- [Bun 1.4+](https://bun.com/docs/installation), plus Google Chrome.
+- `agent-browser` on PATH: `bun add --global agent-browser` (or `brew install agent-browser`).
 
 ### Three paths
 
@@ -27,14 +27,14 @@ All land at `designer setup`.
 
 ```bash
 # A. Trial — no install
-npx -y @pro-vi/designer setup
+bunx -y @pro-vi/designer setup
 
 # B. Daily use
-npm i -g @pro-vi/designer && designer setup
+bun add --global @pro-vi/designer && designer setup
 
 # C. Hacking on it
 git clone https://github.com/pro-vi/designer.git && cd designer
-npm install && ./bin/designer.mjs setup
+bun install && ./bin/designer.mjs setup
 ```
 
 For this audited fork:
@@ -42,8 +42,8 @@ For this audited fork:
 ```bash
 git clone https://github.com/lubomir-dlhy/designer.git
 cd designer
-npm ci
-npm test
+bun ci
+bun test
 ./bin/designer.mjs setup
 ```
 
@@ -63,10 +63,10 @@ Re-run anytime — idempotent. Verify with `designer doctor`.
 
 ```bash
 claude mcp add --scope user --transport stdio designer \
-  -- env DESIGNER_CDP=9222 npx -y @pro-vi/designer mcp serve
+  -- env DESIGNER_CDP=9222 bunx -y @pro-vi/designer mcp serve
 ```
 
-Still needs debug Chrome running (`npx -y @pro-vi/designer setup` handles it).
+Still needs debug Chrome running (`bunx -y @pro-vi/designer setup` handles it).
 
 ### Notes
 
@@ -141,13 +141,13 @@ Fallback when the live URL's IDE chrome eats viewport. Requires a prior handoff.
 designer tasting --key <key>
 ```
 
-Writes `tasting.html` with variant tabs + 1/2/3 shortcuts + persistent notes, serves it on loopback only (`127.0.0.1`), and opens the browser. The command prints the server PID; stop it with `kill <serverPid>` when you are finished (or end the corresponding Python process in Task Manager on Windows).
+Writes `tasting.html` with variant tabs + 1/2/3 shortcuts + persistent notes, serves it with Bun on loopback only (`127.0.0.1`), and opens the browser. The command prints the server PID; stop it with `kill <serverPid>` when you are finished (or end the corresponding Bun process in Task Manager on Windows).
 
 ## Operations
 
 - `designer doctor` — diagnose setup state. Exits 2 on failure.
 - `designer health [--json]` — probe every UI anchor designer depends on. Wire into cron to catch claude.ai UI regressions.
-- **Daily CI** in `.github/workflows/`: `daily-health.yml` runs the auth-required UI probe on a self-hosted macOS runner once per day; `ci.yml` typechecks + builds + does a Docker clean-room install smoke on every PR; `release-please.yml` opens a release PR on conventional commits, merging it tags + publishes via `release-publish.yml`. Selector regressions land as auto-opened PRs under the `selectors-drift` label.
+- **Daily CI** in `.github/workflows/`: `daily-health.yml` runs the auth-required UI probe on a self-hosted macOS runner once per day; `ci.yml` typechecks + tests + does a Bun Docker clean-room install smoke on every PR; `release-please.yml` opens a release PR on conventional commits, merging it tags + publishes to npm. Selector regressions land as auto-opened PRs under the `selectors-drift` label.
 
 ## Known quirks
 
