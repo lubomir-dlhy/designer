@@ -70,9 +70,9 @@ jobs:
       - name: Setup gh PATH
         # The self-hosted Mac mini runner has gh at /opt/homebrew/bin/gh
         # (Homebrew), but the workflow's non-interactive bash doesn't inherit
-        # that PATH from ~/.zshrc — it only gets nvm's node bin. Prepend
+        # that PATH from ~/.zshrc. Prepend
         # Homebrew's bin to $GITHUB_PATH so every subsequent step (including
-        # the npm-spawned auto-heal script's gh() helper) can find gh.
+        # the Bun-spawned auto-heal script's gh() helper) can find gh.
         # Without this, `Ensure labels exist` + the script's cooldown /
         # wholesale-redesign / findDriftPrNumber checks silently no-op.
         run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -94,11 +94,10 @@ jobs:
             --description "Anchors are failing but none are auto-patchable — auto-heal cannot fix these" \
             2>/dev/null || true
 
-      - name: Setup node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          node-version-file: '.nvmrc'
-          cache: 'npm'
+          bun-version: '1.4.0'
 
       - name: Download health artifact from triggering run
         # Cross-workflow artifact download. `run-id` + `github-token` are
@@ -111,13 +110,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install
-        run: npm ci --no-audit --no-fund
+        run: bun ci
 
       - name: Triage candidate anchor
         id: triage
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run -s auto-heal -- triage
+        run: bun run --silent auto-heal -- triage
 
       - name: Heal selected anchor
         id: heal
@@ -132,7 +131,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Re-probe needs the same canary the original run probed — verifying a
           # patch against a different project proves nothing. This mirrors
-          # daily-health.yml's value, and `npm run preflight` now ASSERTS the two
+          # daily-health.yml's value, and `bun run preflight` now ASSERTS the two
           # agree: they had drifted to two different (both deleted) projects
           # while the comment claimed they were kept in sync by convention.
           DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/9a2066ca-e9e4-4972-a294-560092e6a216
@@ -141,7 +140,7 @@ jobs:
           # cannot inject. auto-heal.ts also re-validates the id via
           # isValidAnchorId() before doing anything with it.
           ANCHOR_ID: ${{ steps.triage.outputs.anchor-id }}
-        run: npm run -s auto-heal -- heal "$ANCHOR_ID"
+        run: bun run --silent auto-heal -- heal "$ANCHOR_ID"
 
       - name: Open auto-heal PR
         if: steps.heal.outputs.patched == 'true'
@@ -215,7 +214,7 @@ jobs:
 
       # Unconditional restore. Every revertPatch() call site lives inside the
       # heal process, so a SIGKILL from the 20-minute job ceiling — plausible:
-      # the re-probe alone allows 5 min, the Anthropic call ~3 min, plus npm ci
+      # the re-probe alone allows 5 min, the Anthropic call ~3 min, plus bun ci
       # and snapshot capture — skips all of them and leaves a patched
       # selectors.json on the SHARED self-hosted runner. actions/checkout cleans
       # on the next run, so the exposure window is up to 24h, during which any

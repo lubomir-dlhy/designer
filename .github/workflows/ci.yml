@@ -19,16 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          node-version-file: '.nvmrc'
-          cache: 'npm'
-      - run: npm ci --no-audit --no-fund
-      - run: npm audit --omit=dev --audit-level=high
-      - run: npm run check
-      - run: npm run build
-      - name: Verify dist/ is intact
-        run: test -f dist/cli.js && test -f dist/mcp-server.js
+          bun-version: '1.4.0'
+      - run: bun ci
+      - run: bun audit --prod --audit-level=high
+      - run: bun run check
+      - run: bun test
+      - name: Verify Bun entrypoint
+        run: ./bin/designer.mjs --version
 
   smoke:
     name: clean-room install smoke
@@ -36,12 +35,10 @@ jobs:
     needs: check
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          node-version-file: '.nvmrc'
-          cache: 'npm'
-      - run: npm ci --no-audit --no-fund
-      # install-smoke.sh runs npm pack (which triggers the prepack hook =
-      # check + build) then installs the tarball into a stock node:20
+          bun-version: '1.4.0'
+      - run: bun ci
+      # install-smoke.sh packs with Bun, then installs the tarball into a stock Bun
       # container. ubuntu-latest already has docker available.
       - run: bash scripts/install-smoke.sh

@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env bun
 // LLM-in-the-loop selector recovery. Triggered by `.github/workflows/auto-heal.yml`
 // on daily-health failure. Two subcommands:
 //
@@ -1138,7 +1138,7 @@ async function heal(anchorId: string): Promise<void> {
   );
 
   // Re-probe locally. Hard timeout below the 20-min job ceiling so a hung
-  // npm / orphaned agent-browser process cannot SIGKILL the heal step mid-
+  // Bun / orphaned agent-browser process cannot SIGKILL the heal step mid-
   // revert. DESIGNER_REPROBE=1 routes the artifact write to a .reprobe.json
   // suffix and skips updateStreak — preserving the canonical daily-health
   // artifact + streak for this UTC day. Auth env vars are stripped so the
@@ -1151,7 +1151,7 @@ async function heal(anchorId: string): Promise<void> {
     CLAUDE_CODE_OAUTH_TOKEN: undefined
   } as NodeJS.ProcessEnv;
   console.log(`[auto-heal heal] re-running probe...`);
-  const probe = spawnSync('npm', ['run', '-s', 'probe:health'], {
+  const probe = spawnSync('bun', ['run', '--silent', 'probe:health'], {
     encoding: 'utf8',
     env: reprobeEnv,
     stdio: 'inherit',
@@ -1375,7 +1375,7 @@ function revertPatch(): void {
   // was wrong twice. (1) `git checkout --` on the file this run never touched
   // silently DESTROYS a maintainer's uncommitted edits to it — and hand-editing
   // selectors.json to repair drift is this repo's core maintenance task, so the
-  // likeliest local caller of `npm run auto-heal -- heal <id>` is someone
+  // likeliest local caller of `bun run auto-heal -- heal <id>` is someone
   // comparing their own fix against auto-heal's. (2) The cross-check was
   // `git diff --quiet` with no ref, which compares the working tree to the
   // INDEX; a staged-then-modified file passes it while still differing from
@@ -1495,7 +1495,7 @@ async function main(): Promise<void> {
 // and calls the Anthropic API.
 // realpath BOTH sides: import.meta.url is already resolved through symlinks, so
 // comparing it to a raw argv[1] makes the guard silently false under a symlinked
-// checkout (or an npm-linked bin) — the script would then be imported-but-never-run.
+// checkout (or a package-manager-linked bin) — the script would then be imported-but-never-run.
 // Latent today (both workflows invoke by relative path), cheap to make robust.
 const entry = process.argv[1] ? fs.realpathSync(process.argv[1]) : '';
 const invokedDirectly = entry !== '' && fs.realpathSync(fileURLToPath(import.meta.url)) === entry;

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Mutation harness — the check that the tests are proofs rather than surfaces.
  *
@@ -7,7 +7,7 @@
  * mutation the suite survives is a hole: the property it breaks is asserted
  * somewhere, but nothing verifies it.
  *
- *   node tests/mutation-harness.mjs
+ *   bun tests/mutation-harness.mjs
  *
  * Exit 0 = every mutation killed. Exit 1 = at least one survived (named).
  */
@@ -175,7 +175,7 @@ for (const m of MUTATIONS) {
   let failed = false;
   let detail = '';
   try {
-    execFileSync('npx', ['tsc', '--noEmit'], { cwd: dir, stdio: 'pipe' });
+    execFileSync('bun', ['run', 'check'], { cwd: dir, stdio: 'pipe' });
   } catch (e) {
     failed = true;
     detail = 'typecheck';
@@ -186,7 +186,7 @@ for (const m of MUTATIONS) {
       // harness reported a mutation as surviving that a manual run killed: the
       // test file that caught it had been added after the list was written.
       // Same defect class this harness exists to find.
-      execFileSync('npm', ['test'], { cwd: dir, stdio: 'pipe' });
+      execFileSync('bun', ['test'], { cwd: dir, stdio: 'pipe' });
     } catch (e) {
       failed = true;
       detail = 'gate';

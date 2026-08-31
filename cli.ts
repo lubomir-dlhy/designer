@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env bun
 import fs from 'node:fs';
 import path from 'node:path';
 import { xspawn, xspawnSync, WHICH, IS_WIN } from './cross-platform.ts';
@@ -544,8 +544,8 @@ Flags:
   --port <n>              default auto-assigned from 8765
 
 What it does: walks the latest handoff's project/ dir, writes tasting.html with variant tabs
-(keyboard 1/N to switch) + notes field (persisted in localStorage), starts http.server, opens
-the browser.
+(keyboard 1/N to switch) + notes field (persisted in localStorage), starts a loopback-only
+Bun server, and opens the browser.
 
 Use when Claude.ai/design's IDE chrome (chat panel, toolbar) is stealing viewport space that
 the design needs for judgment. Requires a prior 'designer handoff'.`,
@@ -553,7 +553,7 @@ the design needs for judgment. Requires a prior 'designer handoff'.`,
   setup: `designer setup — one-call first-run for this machine.
 
 Runs in order, idempotent at every step:
-  1. npm install (if missing)
+  1. Verify Bun 1.4+ and synchronize dependencies from bun.lock
   2. Check agent-browser on PATH
   3. If non-debug Chrome running → ask you to Cmd+Q, poll until quit
   4. Auto-launch debug Chrome with --remote-debugging-port + dedicated --user-data-dir
@@ -679,52 +679,25 @@ async function runDoctor(): Promise<DoctorCheck[]> {
 }
 
 function checkDeps(): DoctorCheck {
-  const rootLock = path.join(REPO_ROOT, 'package-lock.json');
-  // Installed-mode (npx / bunx / pnpm): no package-lock shipped, deps live
-  // outside the package dir. If we got this far, the package manager placed them.
+  const [major = 0, minor = 0] = Bun.version.split('.').map((part) => Number.parseInt(part, 10));
+  if (!(major > 1 || (major === 1 && minor >= 4))) {
+    return { name: 'Bun runtime', status: 'fail', detail: `Bun ${Bun.version}; requires >=1.4.0` };
+  }
+  const rootLock = path.join(REPO_ROOT, 'bun.lock');
+  // Installed packages do not ship the repository lockfile; reaching this Bun
+  // entrypoint proves their package manager installed runtime dependencies.
   if (!fs.existsSync(rootLock)) {
-    return { name: 'dependencies installed', status: 'ok', detail: 'installed-mode' };
+    return { name: 'dependencies installed', status: 'ok', detail: `installed-mode, Bun ${Bun.version}` };
   }
   const nm = path.join(REPO_ROOT, 'node_modules');
   if (!fs.existsSync(nm)) {
-    return { name: 'dependencies installed', status: 'fail', detail: 'node_modules missing — run `npm install`' };
+    return { name: 'dependencies installed', status: 'fail', detail: 'node_modules missing — run `bun install`' };
   }
-  const innerLock = path.join(nm, '.package-lock.json');
-  if (!fs.existsSync(innerLock)) {
-    return { name: 'dependencies installed', status: 'ok', detail: 'node_modules present (no inner lockfile)' };
+  const check = xspawnSync('bun', ['install', '--frozen-lockfile', '--dry-run'], { cwd: REPO_ROOT, stdio: 'pipe' });
+  if (check.status !== 0) {
+    return { name: 'dependencies installed', status: 'warn', detail: 'not in sync with bun.lock — run `bun install`' };
   }
-  // npm's node_modules/.package-lock.json structurally omits the top-level ""
-  // self-entry and any optional platform-specific packages it skipped (e.g.
-  // @esbuild/win32-x64 on darwin), so a whole-file hash never matches even
-  // right after a clean install. Compare per-package identity instead.
-  interface LockPkg { version?: string; resolved?: string; integrity?: string; optional?: boolean }
-  let root: Record<string, LockPkg>;
-  let inner: Record<string, LockPkg>;
-  try {
-    const readPkgs = (p: string): Record<string, LockPkg> =>
-      (JSON.parse(fs.readFileSync(p, 'utf8')) as { packages?: Record<string, LockPkg> }).packages || {};
-    root = readPkgs(rootLock);
-    inner = readPkgs(innerLock);
-  } catch {
-    return { name: 'dependencies installed', status: 'warn', detail: 'could not parse lockfiles — run `npm install`' };
-  }
-  const stale: string[] = [];
-  for (const [key, want] of Object.entries(root)) {
-    if (key === '') continue; // self-entry: never present in the inner lockfile
-    const got = inner[key];
-    if (!got) {
-      if (!want.optional) stale.push(key); // optional deps are legitimately skipped on platform mismatch
-    } else if (got.version !== want.version || got.resolved !== want.resolved || got.integrity !== want.integrity) {
-      stale.push(key);
-    }
-  }
-  for (const key of Object.keys(inner)) {
-    if (!(key in root)) stale.push(key); // installed but no longer in the lockfile
-  }
-  if (stale.length > 0) {
-    return { name: 'dependencies installed', status: 'warn', detail: `node_modules stale (${stale.length} package(s) out of sync, e.g. ${stale[0]}) — run \`npm install\`` };
-  }
-  return { name: 'dependencies installed', status: 'ok', detail: 'in sync with package-lock' };
+  return { name: 'dependencies installed', status: 'ok', detail: `in sync with bun.lock, Bun ${Bun.version}` };
 }
 
 async function checkAgentBrowser(): Promise<DoctorCheck> {

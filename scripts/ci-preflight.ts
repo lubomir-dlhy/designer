@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 // It asserts the probe can ACTUALLY DO ITS JOB — before the anchor sweep runs — so
 // that a broken PROBE ENVIRONMENT fails loud and DISTINCT (a red CI job + a
 // notification) instead of masquerading as claude.ai UI drift (a selectors-drift
-// PR). That masquerade is exactly what let the chronic Node-20 bug hide for weeks:
-// on Node <22 the native global WebSocket is undefined, so the in-process CDP
-// readers (OopifHtmlReader / RunStateObserver) return null and every CDP anchor
-// false-failed — indistinguishable, to a human skimming the daily PR, from Claude
+// PR). That masquerade previously let an incompatible runtime hide for weeks:
+// without a native global WebSocket, the in-process CDP readers
+// (OopifHtmlReader / RunStateObserver) return null and every CDP anchor
+// false-fails — indistinguishable, to a human skimming the daily PR, from Claude
 // moving a button.
 //
 // Wire-up (daily-health.yml): this runs as its OWN step WITHOUT continue-on-error,
@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 // only ENVIRONMENT failures are diverted here.
 
 interface Pkg {
-  engines?: { node?: string };
+  engines?: { bun?: string };
 }
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -32,20 +32,20 @@ function report(ok: boolean, name: string, detail: string): void {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name} — ${detail}`);
 }
 
-// 1. Node runtime satisfies the declared engine AND exposes native WebSocket.
-//    This is THE check that would have caught the Node-20 regression on day one.
+// 1. Bun runtime satisfies the declared engine AND exposes native WebSocket.
 {
-  const engines = pkg.engines?.node ?? '>=22';
-  const floorMajor = Number.parseInt((engines.match(/\d+/) ?? ['22'])[0], 10);
-  const nodeMajor = Number.parseInt(process.versions.node.split('.')[0] ?? '0', 10);
+  const engines = pkg.engines?.bun ?? '>=1.4.0';
+  const floor = (engines.match(/\d+(?:\.\d+)*/)?.[0] ?? '1.4.0').split('.').map(Number);
+  const current = Bun.version.split('.').map(Number);
+  const versionOk = (current[0] ?? 0) > (floor[0] ?? 1) ||
+    ((current[0] ?? 0) === (floor[0] ?? 1) && (current[1] ?? 0) >= (floor[1] ?? 4));
   const wsPresent = 'WebSocket' in globalThis;
-  const ok = nodeMajor >= floorMajor && wsPresent;
-  report(ok, 'node runtime', `node ${process.versions.node}, engines "${engines}", WebSocket ${wsPresent ? 'present' : 'MISSING'}`);
+  const ok = versionOk && wsPresent;
+  report(ok, 'bun runtime', `Bun ${Bun.version}, engines "${engines}", WebSocket ${wsPresent ? 'present' : 'MISSING'}`);
   if (!ok) {
     failures.push(
-      `Node ${process.versions.node} does not satisfy engines "${engines}" or lacks the native global WebSocket. ` +
-        `The in-process CDP readers need Node >=22 — on older Node they return null and every CDP anchor false-fails. ` +
-        `Fix the runner/workflow Node (see .nvmrc), do NOT read this as UI drift.`
+      `Bun ${Bun.version} does not satisfy engines "${engines}" or lacks the global WebSocket. ` +
+        `The in-process CDP readers require Bun 1.4+; fix the runner/workflow runtime, do NOT read this as UI drift.`
     );
   }
 }

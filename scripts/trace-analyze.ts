@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env bun
 // Analyze a trace-spike capture: per-request lifecycles, stream-kind verdict,
 // chunk-gap stats (candidate STALLED thresholds), and network-quiet vs
 // DOM-stable correlation (grounds the future FINISHED classifier).

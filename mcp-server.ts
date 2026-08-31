@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env bun
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -212,12 +212,8 @@ export async function startMcpServer(): Promise<void> {
   await server.connect(transport);
 }
 
-// Run server when invoked directly (node mcp-server.ts or via bin/designer-mcp).
+// Run the server when Bun invokes this file directly.
 // Skip when imported (cli.ts uses startMcpServer for the `mcp serve` subcommand).
-const __isDirectInvoke =
-  import.meta.url === `file://${process.argv[1]}` ||
-  process.argv[1]?.endsWith('mcp-server.ts') ||
-  process.argv[1]?.endsWith('mcp-server.js');
-if (__isDirectInvoke) {
+if (import.meta.main) {
   await startMcpServer();
 }

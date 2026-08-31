@@ -48,7 +48,7 @@ jobs:
     # A canary can be DELETED out from under the probe, and the URL keeps
     # answering — claude.ai serves a "Project not found" body on the same
     # /design/p/<uuid> path. Both previous canaries died that way and the
-    # session anchors went on being read as UI drift, so `npm run preflight`
+    # session anchors went on being read as UI drift, so `bun run preflight`
     # now opens this project and fails the job when it is gone. Replacing it is
     # a real step, not a formality.
     #
@@ -66,35 +66,29 @@ jobs:
       - name: Setup gh PATH
         # The self-hosted Mac mini runner has gh at /opt/homebrew/bin/gh
         # (Homebrew), but the workflow's non-interactive bash doesn't inherit
-        # that PATH from ~/.zshrc — it only gets nvm's node bin. Prepend
+        # that PATH from ~/.zshrc. Prepend
         # Homebrew's bin to $GITHUB_PATH so every subsequent step (including
-        # npm-spawned subprocesses that inherit process.env, e.g.
+        # Bun-spawned subprocesses that inherit process.env, e.g.
         # scripts/auto-heal.ts's gh() helper) can find gh. Without this, the
         # `Close stale drift PRs on green` step + auto-heal's `Ensure labels
         # exist` step + the script's cooldown / wholesale-redesign checks
         # silently no-op (`|| true` hides the failure; step exits "success").
         run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
 
-      # Node version comes from ONE source of truth — the repo's `.nvmrc` — read by
-      # every workflow AND by `nvm` on dev machines, so CI can't drift out of sync
-      # (the failure that hid for weeks: this job was pinned to Node 20 while
-      # package.json engines require >=22). It MUST stay >=22: the in-process CDP
-      # readers (OopifHtmlReader / RunStateObserver) use the native global
-      # WebSocket, which only exists on Node >=22; on Node 20 `WebSocket` is
-      # undefined, both attach() return null, and every CDP anchor false-fails. The
-      # `Environment preflight` step below hard-asserts this, so a bad Node can
-      # never again masquerade as claude.ai UI drift.
-      - name: Setup node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      # Bun is pinned to the same minimum used by package.json. Its native
+      # WebSocket implementation is required by the in-process CDP readers; the
+      # environment preflight below prevents runtime drift from masquerading as
+      # claude.ai UI drift.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          node-version-file: '.nvmrc'
-          cache: 'npm'
+          bun-version: '1.4.0'
 
       - name: Install
-        run: npm ci --no-audit --no-fund
+        run: bun ci
 
       - name: Typecheck
-        run: npm run check
+        run: bun run check
 
       - name: Compute date stamp
         id: stamp
@@ -118,12 +112,12 @@ jobs:
             streak-
 
       # Fail the job HERE — loud + distinct — if the probe ENVIRONMENT can't do its
-      # job (Node <22 / no native WebSocket, CDP endpoint down, canary unset). No
+      # job (Bun <1.4 / no native WebSocket, CDP endpoint down, canary unset). No
       # continue-on-error: a red preflight stops the job before the probe + drift-PR
       # steps run, so an environment problem can NEVER again masquerade as a
-      # selectors-drift PR (the way the Node-20 WebSocket bug did for weeks).
+      # selectors-drift PR (the way the old runtime mismatch did for weeks).
       - name: Environment preflight
-        run: npm run -s preflight
+        run: bun run --silent preflight
 
       - name: Run health probe
         id: probe
@@ -132,7 +126,7 @@ jobs:
         # continue-on-error so an ANCHOR (content) failure flows into the
         # selectors-drift PR rather than a hard red — that path is UI-drift signal;
         # the preflight above already caught the environment-broken case.
-        run: npm run -s probe:health
+        run: bun run --silent probe:health
         continue-on-error: true
 
       - name: Save streak file

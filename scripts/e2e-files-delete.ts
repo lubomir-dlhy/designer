@@ -1,4 +1,4 @@
-#!/usr/bin/env -S node --import tsx
+#!/usr/bin/env bun
 //
 // Live end-to-end proof for `deleteFile` / `designer_files_delete`.
 //
@@ -8,7 +8,7 @@
 // asserting the outcome. Run it before merging any change to files-switcher.ts,
 // deleteFile(), or the files.* selectors.
 //
-//   DESIGNER_DELETE_E2E=1 npx tsx scripts/e2e-files-delete.ts
+//   DESIGNER_DELETE_E2E=1 bun scripts/e2e-files-delete.ts
 //
 // SAFETY — the guard is POSITIVE, not a denylist. Every destructive step
 // asserts the target project UUID equals the one THIS RUN created. A denylist
