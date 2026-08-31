@@ -61,7 +61,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup gh PATH
         # The self-hosted Mac mini runner has gh at /opt/homebrew/bin/gh
@@ -85,7 +85,7 @@ jobs:
       # `Environment preflight` step below hard-asserts this, so a bad Node can
       # never again masquerade as claude.ai UI drift.
       - name: Setup node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -110,7 +110,7 @@ jobs:
       # latest streak- prefix.
       - name: Restore streak file
         id: streak-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: artifacts/health/streak.json
           key: streak-${{ github.run_id }}
@@ -142,14 +142,14 @@ jobs:
         # always get a new cache entry, and old entries age out per
         # GitHub's cache eviction policy.
         if: always()
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: artifacts/health/streak.json
           key: streak-${{ github.run_id }}
 
       - name: Upload health artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: health-${{ github.run_id }}
           # JSON only — NOT the page.html / page.png snapshots in the
@@ -197,7 +197,7 @@ jobs:
         # `drift` only — an `incomplete` verdict must NOT be filed as a
         # claude.ai redesign; it is a broken probe and gets its own step below.
         if: steps.probe.outputs.verdict == 'drift' && (github.event_name != 'workflow_dispatch' || inputs.open-pr-on-fail)
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
           # Keep this checked into the repo so a human can compare what the
           # probe saw today vs what was expected. Branch name is stable per-day

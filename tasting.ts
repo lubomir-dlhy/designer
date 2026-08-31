@@ -124,6 +124,14 @@ function escapeHtml(s: string): string {
 }
 
 const servers = new Map<string, { port: number; pid: number }>();
+const LOOPBACK_HOST = '127.0.0.1';
+
+// Keep the preview private to this machine. Python's http.server binds to every
+// network interface when --bind is omitted, which can expose exported designs
+// to other hosts on the same network.
+export function tastingServerArgs(port: number): string[] {
+  return ['-m', 'http.server', '--bind', LOOPBACK_HOST, String(port)];
+}
 
 export async function serveAndOpen(
   projectDir: string,
@@ -134,14 +142,14 @@ export async function serveAndOpen(
   if (!python) {
     throw new Error('tasting requires Python 3. Install python3 (macOS/Linux) or Python 3 from python.org (Windows).');
   }
-  const child: ChildProcess = xspawn(python, ['-m', 'http.server', String(chosenPort)], {
+  const child: ChildProcess = xspawn(python, tastingServerArgs(chosenPort), {
     cwd: projectDir,
     stdio: 'ignore',
     detached: true
   });
   child.unref();
   await sleep(500);
-  const url = `http://127.0.0.1:${chosenPort}/${encodeURI(file)}`;
+  const url = `http://${LOOPBACK_HOST}:${chosenPort}/${encodeURI(file)}`;
   openUrl(url);
   const pid = child.pid ?? -1;
   servers.set(projectDir, { port: chosenPort, pid });
@@ -150,14 +158,13 @@ export async function serveAndOpen(
 
 async function pickFreePort(start: number): Promise<number> {
   const net = await import('node:net');
-  // Python's http.server binds 0.0.0.0 — test the same interface or
-  // we'll miss a conflict with another python server already on *:port.
+  // Test the same loopback interface the preview server uses.
   for (let p = start; p < start + 100; p++) {
     const free = await new Promise<boolean>((resolve) => {
       const s = net.createServer();
       s.once('error', () => resolve(false));
       s.once('listening', () => s.close(() => resolve(true)));
-      s.listen(p, '0.0.0.0');
+      s.listen(p, LOOPBACK_HOST);
     });
     if (free) return p;
   }
