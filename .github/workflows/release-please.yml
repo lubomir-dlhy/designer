@@ -15,58 +15,62 @@ on:
 
 # release-please opens a single "release PR" against main that accumulates
 # every conventional-commit since the last tag. When the human merges that PR,
-# release-please cuts a tag + creates a GH release; we then publish to npm
-# inline in this same job.
+# release-please cuts a tag + creates a GH release; an isolated job in the same
+# workflow run can then publish to npm when explicitly enabled.
 #
 # Why inline (not a separate `on: release` workflow): the GitHub release
 # release-please creates is signed by the default GITHUB_TOKEN, and per
 # GitHub policy events emitted by that token do NOT trigger downstream
-# workflows. A separate `on: release` listener would silently never fire —
-# which is exactly what happened to the previous release-publish.yml (zero
-# runs across v0.3.5..v0.3.7). Keeping the publish in this same job avoids
-# the trigger gotcha entirely.
+# workflows. A separate `on: release` listener would silently never fire.
+# Keeping publish as a dependent job in this same workflow run avoids that
+# trigger gap while allowing its OIDC permission to remain isolated.
 #
 # Why "open a PR, human merges" rather than auto-publish: dependency-bump-only
 # weeks shouldn't ship; the PR is the human's "yes, this is worth a version".
 #
-# Auth: npm Trusted Publishing (OIDC) — no NPM_TOKEN secret. Tokens expire
-# (the 0.3.8 publish 404'd on a 30-day-old token); the OIDC exchange mints a
-# short-lived credential per run instead. One-time registry-side setup:
+# Auth: npm Trusted Publishing (OIDC) — no NPM_TOKEN secret. The OIDC exchange
+# mints a short-lived credential only in the isolated publish job. Publishing is
+# opt-in: set the repository variable NPM_PUBLISH_ENABLED=true after completing
+# the one-time registry-side setup:
 # npmjs.com → @lubomir-dlhy/designer → Settings → Trusted Publisher → GitHub
 # Actions, repo lubomir-dlhy/designer, workflow release-please.yml, publish allowed.
 
-permissions:
-  contents: write
-  pull-requests: write
-  id-token: write   # OIDC: required for trusted publishing + provenance
-
 jobs:
   release-please:
+    permissions:
+      contents: write
+      pull-requests: write
     runs-on: ubuntu-24.04
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
+        if: ${{ !inputs['publish-tag'] }}
         with:
           # release-type lives in release-please-config.json. Only the manifest
           # paths and the token need to be wired here; both files default to the
           # repo root names so we omit them for clarity.
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---- publish gate ----
-      # Everything below runs when release-please actually created a release
-      # this push (i.e. the human just merged the release PR), OR when a
-      # human dispatched the workflow with publish-tag to rescue a tagged-
-      # but-unpublished release. On normal commit pushes the release step
-      # opens/updates the release PR and emits release_created=false, so the
-      # publish steps are skipped.
+  publish:
+    name: publish npm
+    needs: release-please
+    if: >-
+      vars.NPM_PUBLISH_ENABLED == 'true' &&
+      (needs.release-please.outputs.release_created == 'true' || inputs['publish-tag'] != '')
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-24.04
+    steps:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: steps.release.outputs.release_created || inputs.publish-tag
         with:
-          ref: ${{ inputs.publish-tag || steps.release.outputs.tag_name }}
+          ref: ${{ inputs['publish-tag'] || needs.release-please.outputs.tag_name }}
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        if: steps.release.outputs.release_created || inputs.publish-tag
         with:
           bun-version: '1.4.0'
 
@@ -74,7 +78,6 @@ jobs:
       # npm CLI. Bun owns installation, scripts, tests, and packing; Node/npm are
       # retained here only for the final credential-less registry publish.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        if: steps.release.outputs.release_created || inputs.publish-tag
         with:
           node-version: '22.14.0'
           # No registry-url: setup-node would write an .npmrc that references
@@ -83,25 +86,20 @@ jobs:
 
       # Trusted publishing needs npm >= 11.5.1. Use the reviewed exact version;
       # registry tooling must change only in a dedicated dependency PR.
-      - if: steps.release.outputs.release_created || inputs.publish-tag
-        run: npm install -g npm@11.5.1
+      - run: npm install -g npm@11.5.1
 
-      - if: steps.release.outputs.release_created || inputs.publish-tag
-        run: bun ci
+      - run: bun ci
 
       # The package's prepack hook runs the typecheck during `npm publish`,
       # but we run them explicitly here so a failure surfaces in a named step
       # rather than buried in npm publish's output.
-      - if: steps.release.outputs.release_created || inputs.publish-tag
-        run: bun run check
-      - if: steps.release.outputs.release_created || inputs.publish-tag
-        run: bun test
+      - run: bun run check
+      - run: bun test
 
       - name: Verify version matches tag
-        if: steps.release.outputs.release_created || inputs.publish-tag
         run: |
           PKG_V=$(bun -p "require('./package.json').version")
-          TAG="${{ inputs.publish-tag || steps.release.outputs.tag_name }}"
+          TAG="${{ inputs['publish-tag'] || needs.release-please.outputs.tag_name }}"
           TAG=${TAG#v}
           if [ "$PKG_V" != "$TAG" ]; then
             echo "package.json version ($PKG_V) does not match release tag ($TAG)" >&2
@@ -109,5 +107,4 @@ jobs:
           fi
 
       - name: Publish to npm
-        if: steps.release.outputs.release_created || inputs.publish-tag
         run: npm publish --provenance --access public
