@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REQUIRED_BUN_VERSION } from '../runtime-versions.ts';
+import { cdpHttpUrl, cdpPort } from '../cdp-port.ts';
 
 // Environment preflight for the daily-health probe.
 //
@@ -50,12 +51,11 @@ function report(ok: boolean, name: string, detail: string): void {
 
 // 2. CDP endpoint reachable — the signed-in debug Chrome must be up on the port.
 {
-  const raw = process.env.DESIGNER_CDP;
-  const port = raw && raw.length > 0 ? raw : '9222';
+  const port = cdpPort(process.env.DESIGNER_CDP);
   let ok = false;
   let detail = `port ${port}`;
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(cdpHttpUrl(port, '/json/version'), { signal: AbortSignal.timeout(3000) });
     if (res.ok) {
       const body = (await res.json()) as { Browser?: string };
       ok = true;

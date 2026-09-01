@@ -17,10 +17,11 @@ import { runHealth, UI_ANCHORS, type ProbeResult } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
 import { getSelectors } from '../selectors.ts';
 import { classifyInterstitial, INTERSTITIAL_PROBE_EXPR, type InterstitialKind, type InterstitialProbe } from '../interstitials.ts';
+import { cdpHttpUrl, cdpPort } from '../cdp-port.ts';
 
 const SEL = getSelectors();
 
-const CDP_PORT = process.env.DESIGNER_CDP || '9222';
+const CDP_PORT = cdpPort(process.env.DESIGNER_CDP);
 const CHROME_PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 const CHROME_APP = '/Applications/Google Chrome.app';
 
@@ -283,7 +284,7 @@ async function pingCdp(): Promise<{ ok: boolean; detail: string }> {
   try {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), 2000);
-    const r = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`, { signal: ac.signal });
+    const r = await fetch(cdpHttpUrl(CDP_PORT, '/json/version'), { signal: ac.signal });
     clearTimeout(t);
     if (!r.ok) return { ok: false, detail: `HTTP ${r.status}` };
     const j = await r.json().catch(() => null) as { Browser?: string } | null;
@@ -322,20 +323,20 @@ async function ensureCdp(): Promise<CdpStatus> {
 
 function updateStreak(outDir: string, results: ProbeResult[]): void {
   const streakPath = path.join(outDir, 'streak.json');
-  let streak: Record<string, number> = {};
-  if (fs.existsSync(streakPath)) {
-    try {
-      const raw = fs.readFileSync(streakPath, 'utf8');
-      const parsed: unknown = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        // Only keep numeric values; anything else is corrupt + gets dropped.
-        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-          if (typeof v === 'number' && Number.isFinite(v) && v >= 0) streak[k] = v;
-        }
+  let streak = new Map<string, number>();
+  try {
+    const raw = fs.readFileSync(streakPath, 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      // Only keep numeric values; anything else is corrupt + gets dropped.
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v === 'number' && Number.isFinite(v) && v >= 0) streak.set(k, v);
       }
-    } catch (e) {
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.log(`[ci-health] streak.json unreadable (${(e as Error).message}); resetting`);
-      streak = {};
+      streak = new Map<string, number>();
     }
   }
 
@@ -361,9 +362,9 @@ function updateStreak(outDir: string, results: ProbeResult[]): void {
 
   for (const [id, v] of verdict) {
     if (v === 'fail') {
-      streak[id] = (streak[id] ?? 0) + 1;
+      streak.set(id, (streak.get(id) ?? 0) + 1);
     } else {
-      streak[id] = 0;
+      streak.set(id, 0);
     }
   }
 
@@ -375,10 +376,10 @@ function updateStreak(outDir: string, results: ProbeResult[]): void {
   // skips the session phase (DESIGNER_PROBE_PROJECT_URL unset) produces no
   // session.* results, and pruning on that would erase every live session streak.
   const known = new Set(UI_ANCHORS.map((a) => a.id));
-  for (const id of Object.keys(streak)) {
+  for (const id of streak.keys()) {
     if (!known.has(id)) {
       console.log(`[ci-health] pruning orphan streak key ${id} (no longer a declared anchor)`);
-      delete streak[id];
+      streak.delete(id);
     }
   }
 
@@ -388,12 +389,12 @@ function updateStreak(outDir: string, results: ProbeResult[]): void {
   // steps.probe.outcome semantics. The streak file is auto-heal's input
   // signal, not the probe's contract — log + proceed.
   try {
-    fs.writeFileSync(streakPath, JSON.stringify(streak, null, 2) + '\n');
+    fs.writeFileSync(streakPath, JSON.stringify(Object.fromEntries(streak), null, 2) + '\n');
   } catch (e) {
     console.log(`[ci-health] streak.json write failed (${(e as Error).message}); continuing`);
     return;
   }
-  const flagged = Object.entries(streak).filter(([, n]) => n >= 2);
+  const flagged = [...streak.entries()].filter(([, n]) => n >= 2);
   if (flagged.length > 0) {
     console.log(`[ci-health] streak >= 2: ${flagged.map(([id, n]) => `${id}=${n}`).join(', ')}`);
   }

@@ -28,6 +28,7 @@ import { DesignerController } from '../designer-controller.ts';
 import { REPO_ROOT } from '../repo-root.ts';
 import { getSelectors } from '../selectors.ts';
 import { createBrowser } from '../browser.ts';
+import { jsLiteral } from '../js-literal.ts';
 import { switcherStateExpr, clickTriggerExpr, readRowsExpr, type SwitcherRow } from '../files-switcher.ts';
 
 const SEL = getSelectors();
@@ -263,7 +264,7 @@ async function main() {
   const titleSel = '[data-testid="project-title"]';
   const synthClick = (sel: string) =>
     c.browser
-      .evalValue<string>(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`)
+      .evalValue<string>(`(() => { const e = document.querySelector(${jsLiteral(sel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`)
       .catch(() => 'error');
   const menuOpen = () => c.browser.evalValue<boolean>(`!!document.querySelector('[role="menu"]')`).catch(() => false);
   for (const trigger of [titleSel, 'button[aria-label="Project menu"]']) {

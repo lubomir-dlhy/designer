@@ -6,14 +6,16 @@ import { REPO_ROOT } from './repo-root.ts';
 import { defaultChromeBin, isAlternateChromeBinary, isChromeRunning, xspawnSync, WHICH, IS_WIN, IS_MAC, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
 import { getSelectors, presenceSelector } from './selectors.ts';
+import { jsLiteral } from './js-literal.ts';
 import { agentBrowserVersionSupported, REQUIRED_AGENT_BROWSER_VERSION, REQUIRED_BUN_VERSION } from './runtime-versions.ts';
+import { cdpHttpUrl, cdpPort } from './cdp-port.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
 const SKILL_DEST = path.join(SKILL_DEST_DIR, 'SKILL.md');
 const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
 const ALTERNATE_CHROME = isAlternateChromeBinary(process.env.CHROME_BIN);
-const DEFAULT_PORT = process.env.DESIGNER_CDP || '9222';
+const DEFAULT_PORT = cdpPort(process.env.DESIGNER_CDP);
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 
 type Status = 'ok' | 'wait' | 'fail';
@@ -29,7 +31,7 @@ async function sleep(ms: number): Promise<void> {
 
 async function isCdpUp(port: string): Promise<boolean> {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) });
+    const res = await fetch(cdpHttpUrl(port, '/json/version'), { signal: AbortSignal.timeout(1500) });
     return res.ok;
   } catch {
     return false;
@@ -53,7 +55,7 @@ async function verifySignedIn(browser: Browser): Promise<boolean> {
   const s = getSelectors();
   const sel = presenceSelector(s.login.signedInIndicator, s.loginLegacy?.signedInIndicator);
   if (!sel) return false;
-  const js = `!!document.querySelector(${JSON.stringify(sel)})`;
+  const js = `!!document.querySelector(${jsLiteral(sel)})`;
   return browser.evalValue<boolean>(js).catch(() => false);
 }
 

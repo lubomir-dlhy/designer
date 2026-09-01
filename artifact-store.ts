@@ -22,6 +22,7 @@ export interface IterationRecord {
 }
 
 const ARTIFACTS_ROOT = process.env.DESIGNER_ARTIFACTS_DIR || path.join(REPO_ROOT, 'artifacts');
+const MAX_HTML_ARTIFACT_BYTES = 10 * 1024 * 1024;
 
 function slug(s: string | null | undefined): string {
   return String(s || 'session')
@@ -55,14 +56,18 @@ export function saveIteration(key: string, input: SaveIterationInput): Iteration
     files: {}
   };
   if (input.html) {
+    const htmlBytes = Buffer.byteLength(input.html, 'utf8');
+    if (htmlBytes > MAX_HTML_ARTIFACT_BYTES) {
+      throw new Error(`refusing HTML artifact larger than ${MAX_HTML_ARTIFACT_BYTES} bytes`);
+    }
     const p = `${base}.html`;
-    fs.writeFileSync(p, input.html);
+    fs.writeFileSync(p, input.html, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
     record.files.html = p;
   }
   if (input.screenshotPath) {
     record.files.screenshot = input.screenshotPath;
   }
-  fs.writeFileSync(`${base}.json`, JSON.stringify(record, null, 2));
+  fs.writeFileSync(`${base}.json`, JSON.stringify(record, null, 2), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
   return record;
 }
 

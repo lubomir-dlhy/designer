@@ -55,6 +55,7 @@ import {
 } from './anchor-patcher.ts';
 import { isFailing, isWorking } from '../ui-anchors.ts';
 import { getSelectors } from '../selectors.ts';
+import { jsLiteral } from '../js-literal.ts';
 
 const SEL = getSelectors();
 
@@ -1437,7 +1438,7 @@ async function verifySelectorMatch(phase: 'home' | 'session', selector: string):
     // Don't re-navigate — captureCurrentSnapshot left Chrome on the right
     // page. JSON.stringify lets us safely embed the selector inside the
     // eval string regardless of which quote characters it contains.
-    const js = `document.querySelectorAll(${JSON.stringify(selector)}).length`;
+    const js = `document.querySelectorAll(${jsLiteral(selector)}).length`;
     const n = await browser.evalValue<number>(js);
     return typeof n === 'number' && Number.isFinite(n) ? n : 0;
   } catch (e) {

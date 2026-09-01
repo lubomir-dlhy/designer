@@ -94,3 +94,9 @@ test('renamed turn RPCs fail classification but remain visible for health detail
   assert.equal(turnRpcFromUrl(renamed), null);
   assert.equal(observedRpcPathFromUrl(renamed), `${OMELETTE_TURN_SERVICE}/CompleteTurn`);
 });
+
+test('turn RPC parsing requires exact service and terminal RPC path segments', () => {
+  assert.equal(turnRpcFromUrl(`${base}/Chat/attacker-controlled`), null);
+  assert.equal(turnRpcFromUrl(`${base}Suffix/Chat`), null);
+  assert.equal(turnRpcFromUrl(`${base}/Chat?stream=true`), 'Chat');
+});
