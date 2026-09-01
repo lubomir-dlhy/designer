@@ -37,10 +37,16 @@ export function turnRpcFromUrl(url: string): TurnRpc | null {
   } catch {
     // Some tests pass path fragments directly.
   }
-  const escapedService = OMELETTE_TURN_SERVICE.replace(/\./g, '\\.');
-  const match = path.match(new RegExp(`(?:^|/)${escapedService}/(Chat|RenewTurn|ReleaseTurn)(?:$|[/?#])`));
-  if (!match?.[1]) return null;
-  return TURN_RPCS.includes(match[1] as TurnRpc) ? (match[1] as TurnRpc) : null;
+  // Compare path segments instead of constructing a regular expression from a
+  // service name. This makes the accepted grammar explicit and removes an
+  // escaping boundary entirely.
+  const segments = path.split(/[?#]/, 1)[0]!.split('/').filter(Boolean);
+  for (let i = 0; i < segments.length - 1; i++) {
+    if (segments[i] !== OMELETTE_TURN_SERVICE) continue;
+    const candidate = segments[i + 1];
+    if (i + 2 === segments.length && candidate && TURN_RPCS.includes(candidate as TurnRpc)) return candidate as TurnRpc;
+  }
+  return null;
 }
 
 export function observedRpcPathFromUrl(url: string): string | null {

@@ -1,4 +1,5 @@
 import { xspawn } from './cross-platform.ts';
+import { agentBrowserCdp } from './cdp-port.ts';
 
 const BIN = process.env.DESIGNER_AGENT_BROWSER_BIN || 'agent-browser';
 const DEFAULT_SESSION = process.env.DESIGNER_SESSION_NAME || 'designer';
@@ -7,7 +8,7 @@ const DEFAULT_SESSION = process.env.DESIGNER_SESSION_NAME || 'designer';
 // fall through to AGENT_BROWSER_SESSION_NAME mode and agent-browser launches
 // its own Chromium instead of attaching to the user's live signed-in Chrome.
 // Set DESIGNER_CDP='' explicitly to opt out and use the session-managed flow.
-const CDP = process.env.DESIGNER_CDP ?? '9222';
+const CDP = agentBrowserCdp(process.env.DESIGNER_CDP ?? '9222');
 
 export interface CreateBrowserOptions {
   session?: string;
@@ -95,6 +96,7 @@ export function createBrowser({
   timeoutMs = 30_000,
   cdp = CDP
 }: CreateBrowserOptions = {}): Browser {
+  cdp = agentBrowserCdp(cdp);
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,
     AGENT_BROWSER_DEFAULT_TIMEOUT: String(timeoutMs),

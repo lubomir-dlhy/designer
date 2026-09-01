@@ -4,15 +4,16 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { defaultChromeBin, isAlternateChromeBinary, isChromeRunning, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { isCdpEnabled } from './cdp-env.ts';
+import { cdpHttpUrl, cdpPort } from './cdp-port.ts';
 
-const PORT = process.env.DESIGNER_CDP || '9222';
+const PORT = cdpPort(process.env.DESIGNER_CDP);
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
 const ALTERNATE_CHROME = isAlternateChromeBinary(process.env.CHROME_BIN);
 
 async function isCdpUp(): Promise<boolean> {
   try {
-    const res = await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(1500) });
+    const res = await fetch(cdpHttpUrl(PORT, '/json/version'), { signal: AbortSignal.timeout(1500) });
     return res.ok;
   } catch {
     return false;

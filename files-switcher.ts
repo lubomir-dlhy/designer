@@ -1,4 +1,5 @@
 import type { Selectors } from './selectors.ts';
+import { jsLiteral } from './js-literal.ts';
 
 // The "Pages" files switcher — the surface `deleteFile` drives, the
 // `session.filesSwitcher` health anchor probes, and the delete e2e exercises.
@@ -90,7 +91,7 @@ export interface SwitcherRow {
  */
 export function clickTriggerExpr(f: Selectors['files']): string {
   return `(() => {
-    const t = document.querySelector(${JSON.stringify(f.switcherTrigger)});
+    const t = document.querySelector(${jsLiteral(f.switcherTrigger)});
     if (!t) return 'no-trigger';
     t.click();
     return 'clicked';
@@ -110,14 +111,14 @@ export function clickTriggerExpr(f: Selectors['files']): string {
  */
 export function switcherStateExpr(f: Selectors['files']): string {
   return `(() => {
-    const rows = document.querySelectorAll(${JSON.stringify(f.switcherRow)}).length;
+    const rows = document.querySelectorAll(${jsLiteral(f.switcherRow)}).length;
     if (rows > 0) return 'open';
     // Open-ness must NOT be inferred from the row count alone: a project whose
     // last file was just deleted has an OPEN popover with zero rows, and calling
     // that 'closed' made the opener toggle it shut and thrash (each cycle costs
     // ~2s of sleeps and never recovers). The popover's own chrome is the signal.
     // Structural first: an expanded trigger is the product's own statement.
-    const trigger = document.querySelector(${JSON.stringify(f.switcherTrigger)});
+    const trigger = document.querySelector(${jsLiteral(f.switcherTrigger)});
     const expanded = trigger && trigger.getAttribute('aria-expanded');
     if (expanded === 'true') return 'open-empty';
     if (expanded === 'false') return 'closed';
@@ -127,7 +128,7 @@ export function switcherStateExpr(f: Selectors['files']): string {
     // safe value: the settle treats it as inconclusive and the verb collapses to
     // outcome-unknown rather than inventing a verdict.
     const chrome = Array.from(document.querySelectorAll('button')).some(
-      (b) => (b.textContent || '').trim() === ${JSON.stringify(MENU_NEW_BLANK_PAGE)}
+      (b) => (b.textContent || '').trim() === ${jsLiteral(MENU_NEW_BLANK_PAGE)}
     );
     if (chrome) return 'open-empty';
     if (!trigger) return 'no-trigger';
@@ -142,7 +143,7 @@ export function switcherStateExpr(f: Selectors['files']): string {
  */
 export function readRowsExpr(f: Selectors['files']): string {
   return `(() => {
-    const nodes = Array.from(document.querySelectorAll(${JSON.stringify(f.switcherRow)}));
+    const nodes = Array.from(document.querySelectorAll(${jsLiteral(f.switcherRow)}));
     // Independence probe, keyed on the identity of the ROW NODES themselves —
     // not their container. A container stamp is defeated by re-parenting: move
     // the same rows under a new parent and a stale read looks fresh. The nodes
@@ -177,7 +178,7 @@ export function readRowsExpr(f: Selectors['files']): string {
 export function stampRowExpr(f: Selectors['files'], index: number): string {
   return `(() => {
     document.querySelectorAll('[${STAMP_ATTR}="${STAMP_ROW}"]').forEach((n) => n.removeAttribute('${STAMP_ATTR}'));
-    const rows = Array.from(document.querySelectorAll(${JSON.stringify(f.switcherRow)}));
+    const rows = Array.from(document.querySelectorAll(${jsLiteral(f.switcherRow)}));
     const row = rows[${index}];
     if (!row) return 'no-row:' + rows.length;
     row.setAttribute('${STAMP_ATTR}', '${STAMP_ROW}');
@@ -201,7 +202,7 @@ export function stampMenuDeleteExpr(): string {
     if (menus.length === 0) return 'no-menu';
     const items = menus.flatMap((m) => Array.from(m.querySelectorAll('[role="menuitem"], button')));
     if (items.length === 0) return 'no-items';
-    const hits = items.filter((e) => (e.textContent || '').trim() === ${JSON.stringify(MENU_ITEM_DELETE)});
+    const hits = items.filter((e) => (e.textContent || '').trim() === ${jsLiteral(MENU_ITEM_DELETE)});
     if (hits.length !== 1) return 'items:' + items.map((e) => (e.textContent || '').trim()).join('|');
     hits[0].setAttribute('${STAMP_ATTR}', '${STAMP_MENU_DELETE}');
     return 'stamped';
@@ -223,7 +224,7 @@ export function verifyConfirmDialogExpr(f: Selectors['files'], legacyDialog: str
     const clear = () => document.querySelectorAll('[${STAMP_ATTR}="${STAMP_CONFIRM_DELETE}"], [${STAMP_ATTR}="${STAMP_CONFIRM_CANCEL}"]')
       .forEach((n) => n.removeAttribute('${STAMP_ATTR}'));
     clear();
-    const sels = ${JSON.stringify(dialogSelectors)};
+    const sels = ${jsLiteral(dialogSelectors)};
     let dialog = null;
     for (const s of sels) { const d = document.querySelector(s); if (d) { dialog = d; break; } }
     if (!dialog) return { found: false, dialogFile: null, matched: false, stamped: null };
@@ -236,12 +237,12 @@ export function verifyConfirmDialogExpr(f: Selectors['files'], legacyDialog: str
     // parseConfirmDialog below, so the shipped rule and the tested rule cannot
     // drift (they did once: first-match-wins here vs exactly-one there, which
     // let this path authorize a delete the tests believed was refused).
-    const all = Array.from(text.matchAll(new RegExp(${JSON.stringify(CONFIRM_ECHO_RE_SRC)}, 'g')));
+    const all = Array.from(text.matchAll(new RegExp(${jsLiteral(CONFIRM_ECHO_RE_SRC)}, 'g')));
     const dialogFile = all.length === 1 ? all[0][1] : null;
-    const matched = dialogFile !== null && dialogFile === ${JSON.stringify(fileName)};
+    const matched = dialogFile !== null && dialogFile === ${jsLiteral(fileName)};
     const buttons = Array.from(dialog.querySelectorAll('button'));
     const byText = (t) => buttons.filter((b) => (b.textContent || '').trim() === t);
-    const wanted = matched ? ${JSON.stringify(DIALOG_BUTTON_DELETE)} : ${JSON.stringify(DIALOG_BUTTON_CANCEL)};
+    const wanted = matched ? ${jsLiteral(DIALOG_BUTTON_DELETE)} : ${jsLiteral(DIALOG_BUTTON_CANCEL)};
     const hits = byText(wanted);
     if (hits.length !== 1) {
       return { found: true, dialogFile, matched, stamped: null,
@@ -256,7 +257,7 @@ export function verifyConfirmDialogExpr(f: Selectors['files'], legacyDialog: str
 /** Is any confirm dialog still on screen? (post-cancel assertion) */
 export function dialogPresentExpr(f: Selectors['files'], legacyDialog: string | undefined): string {
   const sels = [f.confirmDialog, legacyDialog].filter(Boolean) as string[];
-  return `(() => ${JSON.stringify(sels)}.some((s) => !!document.querySelector(s)))()`;
+  return `(() => ${jsLiteral(sels)}.some((s) => !!document.querySelector(s)))()`;
 }
 
 /**
@@ -276,7 +277,7 @@ export function dialogPresentExpr(f: Selectors['files'], legacyDialog: string | 
  */
 export function hitTestStatusExpr(sel: string): string {
   return `(() => {
-    const el = document.querySelector(${JSON.stringify(sel)});
+    const el = document.querySelector(${jsLiteral(sel)});
     if (!el) return 'absent';
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) return 'zero-size';
@@ -307,7 +308,7 @@ export function scrimDismissPointExpr(f: Selectors['files'], legacyDialog: strin
   const sels = [f.confirmDialog, legacyDialog].filter(Boolean) as string[];
   return `(() => {
     let dialog = null;
-    for (const s of ${JSON.stringify(sels)}) { const d = document.querySelector(s); if (d) { dialog = d; break; } }
+    for (const s of ${jsLiteral(sels)}) { const d = document.querySelector(s); if (d) { dialog = d; break; } }
     if (!dialog) return null;
     const dr = dialog.getBoundingClientRect();
     // Corners first — the dialog is centred, so these are the safest points.
@@ -327,7 +328,7 @@ export function scrimDismissPointExpr(f: Selectors['files'], legacyDialog: strin
 /** Viewport centre of a stamped node, for a coordinate-addressed trusted click. */
 export function centerOfExpr(sel: string): string {
   return `(() => {
-    const el = document.querySelector(${JSON.stringify(sel)});
+    const el = document.querySelector(${jsLiteral(sel)});
     if (!el) return null;
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) return null;

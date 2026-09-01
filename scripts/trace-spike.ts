@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DesignerController, type IterateResult } from '../designer-controller.ts';
 import { CdpTraceRecorder, type TraceSummary } from '../cdp-trace.ts';
+import { jsLiteral } from '../js-literal.ts';
 import { artifactsRoot } from '../artifact-store.ts';
 import { getSession } from '../session-store.ts';
 
@@ -80,10 +81,10 @@ function buildSampleJs(c: DesignerController): string {
   return `(() => {
     const q = (s) => { try { return document.querySelector(s); } catch { return null; } };
     const vis = (el) => { if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    const composer = q(${JSON.stringify(sel.composer.promptTextarea)});
-    const send = q(${JSON.stringify(sel.composer.sendButton)});
-    const iframe = q(${JSON.stringify(sel.preview.iframeOrContainer)});
-    const msgs = q(${JSON.stringify(sel.messages.chatMessagesContainer)});
+    const composer = q(${jsLiteral(sel.composer.promptTextarea)});
+    const send = q(${jsLiteral(sel.composer.sendButton)});
+    const iframe = q(${jsLiteral(sel.preview.iframeOrContainer)});
+    const msgs = q(${jsLiteral(sel.messages.chatMessagesContainer)});
     let chatTurnCount = 0; let lastTurnRole = null;
     if (msgs) {
       const turns = msgs.querySelectorAll('[data-index]');

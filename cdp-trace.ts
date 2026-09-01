@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureCdpUp } from './cdp-ensure.ts';
+import { assertLoopbackWebSocketUrl, cdpHttpUrl, cdpPort } from './cdp-port.ts';
 
 // CDP network trace recorder — spike-grade groundwork for the future
 // network-first run-state observer (RUNNING/FINISHED/STALLED/BLOCKED).
@@ -19,7 +20,7 @@ import { ensureCdpUp } from './cdp-ensure.ts';
 // Target.setAutoAttach({flatten:true}) + per-session Network.enable; send()
 // and event handling already tolerate a sessionId field for that reason.
 
-const DEFAULT_PORT = process.env.DESIGNER_CDP || '9222';
+const DEFAULT_PORT = cdpPort(process.env.DESIGNER_CDP);
 const DESIGN_URL_PATTERN = /^https:\/\/claude\.ai\/design/;
 const REDACT_KEY_PATTERN = /^(cookie|set-cookie|authorization|proxy-authorization|x-api-key)$/i;
 const STREAMABLE_RESOURCE_TYPES = new Set(['XHR', 'Fetch', 'EventSource']);
@@ -151,21 +152,28 @@ function isCdpTarget(v: unknown): v is CdpTarget {
 export function redact(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redact);
   if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = REDACT_KEY_PATTERN.test(k) ? '[redacted]' : redact(v);
-    }
-    return out;
+    // Object.fromEntries defines own data properties, including for a hostile
+    // "__proto__" key, rather than invoking Object.prototype setters.
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        REDACT_KEY_PATTERN.test(k) ? '[redacted]' : redact(v)
+      ])
+    );
   }
   return value;
 }
 
 export async function listTargets(port: string = DEFAULT_PORT): Promise<CdpTarget[]> {
-  const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) });
+  const safePort = cdpPort(port);
+  const res = await fetch(cdpHttpUrl(safePort, '/json/list'), { signal: AbortSignal.timeout(3000) });
   if (!res.ok) throw new Error(`CDP /json/list on :${port} returned ${res.status}`);
   const body: unknown = await res.json();
   if (!Array.isArray(body)) throw new Error(`CDP /json/list on :${port} returned a non-array payload`);
-  return body.filter(isCdpTarget);
+  return body.filter(isCdpTarget).map((target) => ({
+    ...target,
+    webSocketDebuggerUrl: assertLoopbackWebSocketUrl(target.webSocketDebuggerUrl)
+  }));
 }
 
 export async function findDesignTarget({
@@ -436,8 +444,8 @@ export class CdpTraceRecorder extends CdpSession {
   private total = 0;
   private bodyCaptures = 0;
   private ended = false;
-  private byMethod: Record<string, number> = {};
-  private droppedByMethod: Record<string, number> = {};
+  private byMethod = new Map<string, number>();
+  private droppedByMethod = new Map<string, number>();
 
   private constructor(ws: WebSocket, target: CdpTarget, opts: AttachOptions) {
     super(ws, target, opts);
@@ -506,8 +514,8 @@ export class CdpTraceRecorder extends CdpSession {
     return {
       durationMs: Date.now() - this.startedAt,
       total: this.total,
-      byMethod: this.byMethod,
-      droppedByMethod: this.droppedByMethod,
+      byMethod: Object.fromEntries(this.byMethod),
+      droppedByMethod: Object.fromEntries(this.droppedByMethod),
       reconnects: this.reconnects,
       bodyCaptures: this.bodyCaptures
     };
@@ -515,7 +523,7 @@ export class CdpTraceRecorder extends CdpSession {
 
   protected override onEvent(method: string, rawParams: unknown, sessionId?: string): void {
     if (!PERSIST_METHODS.has(method)) {
-      this.droppedByMethod[method] = (this.droppedByMethod[method] || 0) + 1;
+      this.droppedByMethod.set(method, (this.droppedByMethod.get(method) ?? 0) + 1);
       return;
     }
     const params = asRec(rawParams);
@@ -524,7 +532,7 @@ export class CdpTraceRecorder extends CdpSession {
     const ev: TraceEvent = { ts: Date.now(), kind: 'cdp', method, params: redact(shaped) };
     if (sessionId) ev.sessionId = sessionId;
     this.writeLine(ev);
-    this.byMethod[method] = (this.byMethod[method] || 0) + 1;
+    this.byMethod.set(method, (this.byMethod.get(method) ?? 0) + 1);
 
     if (method === 'Network.responseReceived') this.maybeStreamContent(params);
     if (method === 'Network.loadingFinished') this.maybeFetchBody(params);

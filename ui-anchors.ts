@@ -1,4 +1,5 @@
 import type { Browser } from './browser.ts';
+import { jsLiteral } from './js-literal.ts';
 import { RunStateObserver } from './run-state.ts';
 import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from './preview-host.ts';
 import { isCdpEnabled } from './cdp-env.ts';
@@ -96,7 +97,7 @@ interface AnchorDef {
 
 async function hasSelector(browser: Browser, sel: string): Promise<boolean> {
   return !!(await browser
-    .evalValue<boolean>(`!!document.querySelector(${JSON.stringify(sel)})`)
+    .evalValue<boolean>(`!!document.querySelector(${jsLiteral(sel)})`)
     .catch(() => false));
 }
 
@@ -144,7 +145,7 @@ async function isCanvasEditorView(browser: Browser): Promise<boolean> {
 async function hasButtonMatching(browser: Browser, pattern: RegExp): Promise<boolean> {
   return !!(await browser
     .evalValue<boolean>(
-      `(() => { const re = new RegExp(${JSON.stringify(pattern.source)}, ${JSON.stringify(pattern.flags)}); return Array.from(document.querySelectorAll('button')).some(b => re.test((b.textContent || '').trim())); })()`
+      `(() => { const re = new RegExp(${jsLiteral(pattern.source)}, ${jsLiteral(pattern.flags)}); return Array.from(document.querySelectorAll('button')).some(b => re.test((b.textContent || '').trim())); })()`
     )
     .catch(() => false));
 }
@@ -156,7 +157,7 @@ async function getPreviewIframeSrc(browser: Browser): Promise<string> {
   return (
     (await browser
       .evalValue<string>(
-        `(() => { const el = document.querySelector(${JSON.stringify(SEL.preview.iframeOrContainer)}); return (el && el.src) || ''; })()`
+        `(() => { const el = document.querySelector(${jsLiteral(SEL.preview.iframeOrContainer)}); return (el && el.src) || ''; })()`
       )
       .catch(() => '')) || ''
   );
@@ -210,7 +211,7 @@ async function probeRowMenu(
   if (items.length === 0) {
     const res = await b
       .evalValue<string>(
-        `(() => { const e = document.querySelector(${JSON.stringify(moreSel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`
+        `(() => { const e = document.querySelector(${jsLiteral(moreSel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`
       )
       .catch(() => 'error');
     await sleep(800);
@@ -266,7 +267,7 @@ function sleep(ms: number): Promise<void> {
 // the 2026-06 build, so a raw canonical lookup finds nothing on the live UI.
 // Resolved in order rather than comma-joined, so a stale duplicate earlier in
 // the document cannot win the click.
-const SEND_BRANCHES_JSON = JSON.stringify(orderedBranches(SEL.composer.sendButton, SEL.composerLegacy?.sendButton));
+const SEND_BRANCHES_JSON = jsLiteral(orderedBranches(SEL.composer.sendButton, SEL.composerLegacy?.sendButton));
 
 async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; detail?: string }> {
   const prompt =
@@ -274,9 +275,9 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
   const filled = await browser
     .evalValue<boolean>(
       `(() => {
-        const el = document.querySelector(${JSON.stringify(SEL.composer.promptTextarea)});
+        const el = document.querySelector(${jsLiteral(SEL.composer.promptTextarea)});
         if (!el) return false;
-        const text = ${JSON.stringify(prompt)};
+        const text = ${jsLiteral(prompt)};
         if (el instanceof HTMLTextAreaElement) {
           const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
           setter.call(el, text);
@@ -561,7 +562,7 @@ export const UI_ANCHORS: AnchorDef[] = [
       const shape: ComposerShape = await b
         .evalValue<ComposerShape>(
           `(() => {
-            const el = document.querySelector(${JSON.stringify(SEL.composer.promptTextarea)});
+            const el = document.querySelector(${jsLiteral(SEL.composer.promptTextarea)});
             if (!el) return { found: false };
             const fillable = el instanceof HTMLTextAreaElement || el.isContentEditable;
             return { found: true, tag: el.tagName, contentEditable: el.isContentEditable, fillable };
@@ -736,7 +737,7 @@ export const UI_ANCHORS: AnchorDef[] = [
       const countRows = (): Promise<number> =>
         b
           .evalValue<number>(
-            `(() => { const cm = document.querySelector(${JSON.stringify(SEL.messages.chatMessagesContainer)}); if (!cm) return -1; return cm.querySelectorAll('[data-index]').length; })()`
+            `(() => { const cm = document.querySelector(${jsLiteral(SEL.messages.chatMessagesContainer)}); if (!cm) return -1; return cm.querySelectorAll('[data-index]').length; })()`
           )
           .catch(() => -1);
       // The chat renders progressively after navigation; settle before judging.
@@ -795,7 +796,7 @@ export const UI_ANCHORS: AnchorDef[] = [
             const ctrl = new AbortController();
             const to = setTimeout(() => ctrl.abort(), 15000);
             try {
-              const r = await fetch('/design/v1/design/projects/' + ${JSON.stringify(projectId)} + '/download', { headers: { Accept: '*/*' }, signal: ctrl.signal });
+              const r = await fetch('/design/v1/design/projects/' + ${jsLiteral(projectId)} + '/download', { headers: { Accept: '*/*' }, signal: ctrl.signal });
               const o = { status: r.status, ct: r.headers.get('content-type') || '' };
               try { await r.body.cancel(); } catch {}
               return o;
@@ -1016,7 +1017,7 @@ export const UI_ANCHORS: AnchorDef[] = [
           const stillOpen = (await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open';
           const now = stillOpen
             ? await b
-                .evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`)
+                .evalValue<number>(`document.querySelectorAll(${jsLiteral(SEL.files.switcherRow)}).length`)
                 .catch(() => -1)
             : -1;
           // -1 = not comparable (popover already closed, or read failed).
@@ -1069,7 +1070,7 @@ export const UI_ANCHORS: AnchorDef[] = [
         return { ok: false, detail: `a confirm dialog is open (${dialogSel}) — the switcher probe left the page mid-flow` };
       }
       const rows = await b
-        .evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`)
+        .evalValue<number>(`document.querySelectorAll(${jsLiteral(SEL.files.switcherRow)}).length`)
         .catch(() => null);
       if (rows === null) {
         return { ok: true, status: 'skip', detail: 'could not read switcher state after the probe — inconclusive' };

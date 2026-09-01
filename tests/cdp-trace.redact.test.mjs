@@ -27,3 +27,12 @@ test('redact still masks sensitive header keys (header-name path unchanged)', ()
   assert.equal(out.headers.authorization, '[redacted]');
   assert.equal(out.headers['x-foo'], 'ok');
 });
+
+test('redact preserves hostile property names without mutating prototypes', () => {
+  const input = JSON.parse('{"__proto__":{"polluted":true},"constructor":"remote"}');
+  const out = redact(input);
+  assert.equal(Object.prototype.polluted, undefined);
+  assert.equal(Object.hasOwn(out, '__proto__'), true);
+  assert.deepEqual(out.__proto__, { polluted: true });
+  assert.equal(out.constructor, 'remote');
+});

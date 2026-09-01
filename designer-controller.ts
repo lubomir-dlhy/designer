@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
+import { jsLiteral } from './js-literal.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
 import { getSelectors, orderedBranches, presenceSelector, type Selectors } from './selectors.ts';
 import { ensureCdpUp } from './cdp-ensure.ts';
@@ -948,15 +949,15 @@ export class DesignerController {
     // hidden duplicate earlier in the page could win over the canonical control
     // and we would click the wrong button.
     const sendButtons = Array.isArray(sendButton) ? sendButton.filter(Boolean) : [sendButton];
-    const sendButtonsJson = JSON.stringify(sendButtons);
+    const sendButtonsJson = jsLiteral(sendButtons);
     await this.browser.waitFor(promptTextarea);
     // The composer has shipped as both a React-controlled <textarea> and a
     // ProseMirror contenteditable <div> — branch on what's actually there.
     await this.browser.evalValue<boolean>(
       `(() => {
-        const el = document.querySelector(${JSON.stringify(promptTextarea)});
+        const el = document.querySelector(${jsLiteral(promptTextarea)});
         if (!el) throw new Error('composer input not found');
-        const text = ${JSON.stringify(prompt)};
+        const text = ${jsLiteral(prompt)};
         if (el instanceof HTMLTextAreaElement) {
           // Bypass React's value ownership via the native setter, then fire a
           // bubbling input event.
@@ -998,7 +999,7 @@ export class DesignerController {
       await new Promise((r) => setTimeout(r, 150));
       const ready = await this.browser.evalValue<boolean>(
         `(() => {
-          const el = document.querySelector(${JSON.stringify(promptTextarea)});
+          const el = document.querySelector(${jsLiteral(promptTextarea)});
           const hasText = !!el && (el instanceof HTMLTextAreaElement ? el.value : (el.textContent || '')).trim().length > 0;
           let b = null;
           for (const s of ${sendButtonsJson}) { b = document.querySelector(s); if (b) break; }
@@ -1417,8 +1418,8 @@ export class DesignerController {
         // overlay link — reading its text (what the 2026-06 scrape did) yielded
         // null for every project. The name lives in the row's first cell and is
         // mirrored onto the anchor's aria-label.
-        const LINK_SEL = ${JSON.stringify(this.selectors.home.projectLink)};
-        const ROW_SEL = ${JSON.stringify(this.selectors.home.projectCard)};
+        const LINK_SEL = ${jsLiteral(this.selectors.home.projectLink)};
+        const ROW_SEL = ${jsLiteral(this.selectors.home.projectCard)};
 
         // Parse the uuid from the PATHNAME, not a substring of the whole href:
         // a settings/breadcrumb link, or any URL carrying a project link in a
@@ -1886,7 +1887,7 @@ export class DesignerController {
       dispatched = true;
       const res = await this.browser
         .evalValue<string>(
-          `(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`
+          `(() => { const e = document.querySelector(${jsLiteral(sel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`
         )
         .catch(() => 'error');
       if (res !== 'clicked') return { fail: `synthetic click ${res}`, dispatched };
@@ -2035,7 +2036,7 @@ export class DesignerController {
       await sleep(600);
       if (!(await menuStamped())) {
         const res = await this.browser
-          .evalValue<string>(`(() => { const e = document.querySelector(${JSON.stringify(moreSel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`)
+          .evalValue<string>(`(() => { const e = document.querySelector(${jsLiteral(moreSel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`)
           .catch(() => 'error');
         await sleep(800);
         if (res !== 'clicked' || !(await menuStamped())) {
@@ -2278,7 +2279,7 @@ export class DesignerController {
       (await this.browser
         .evalValue<ChatTurn[]>(
           `(() => {
-            const c = document.querySelector(${JSON.stringify(this.selectors.messages.chatMessagesContainer)});
+            const c = document.querySelector(${jsLiteral(this.selectors.messages.chatMessagesContainer)});
             const inner = c && c.children[0];
             if (!inner) return [];
             return Array.from(inner.children).map((d) => {
@@ -2347,7 +2348,7 @@ export class DesignerController {
   async getIframeSrc(): Promise<string> {
     const src = await this.browser
       .evalValue<string>(
-        `(() => { const el = document.querySelector(${JSON.stringify(this.selectors.preview.iframeOrContainer)}); return (el && el.src) || ''; })()`
+        `(() => { const el = document.querySelector(${jsLiteral(this.selectors.preview.iframeOrContainer)}); return (el && el.src) || ''; })()`
       )
       .catch(() => '');
     return src || '';
@@ -2478,7 +2479,7 @@ export class DesignerController {
       const ctrl = new AbortController();
       const to = setTimeout(() => ctrl.abort(), ${timeoutMs});
       try {
-        const r = await fetch('/design/v1/design/projects/' + ${JSON.stringify(projectId)} + '/download', { headers: { Accept: '*/*' }, signal: ctrl.signal });
+        const r = await fetch('/design/v1/design/projects/' + ${jsLiteral(projectId)} + '/download', { headers: { Accept: '*/*' }, signal: ctrl.signal });
         if (!r.ok) return { status: r.status };
         const bytes = new Uint8Array(await r.arrayBuffer());
         let bin = '';
@@ -2525,7 +2526,7 @@ export class DesignerController {
       const rows = await this.browser
         .evalValue<Array<{ idx: number; role: 'assistant' | 'user'; text: string }>>(
           `(() => {
-            const c = document.querySelector(${JSON.stringify(this.selectors.messages.chatMessagesContainer)});
+            const c = document.querySelector(${jsLiteral(this.selectors.messages.chatMessagesContainer)});
             const inner = c && c.children[0];
             if (!inner) return [];
             return Array.from(inner.children).map((d) => {
@@ -2543,10 +2544,10 @@ export class DesignerController {
       this.browser
         .evalValue<number>(
           `(() => {
-            let s = document.querySelector(${JSON.stringify(this.selectors.messages.chatMessagesContainer)});
+            let s = document.querySelector(${jsLiteral(this.selectors.messages.chatMessagesContainer)});
             for (let i = 0; i < 8 && s; i++) { if (s.scrollHeight > s.clientHeight + 4) break; s = s.parentElement; }
             if (!s) return -1;
-            if (${JSON.stringify(dir)} === 'top') s.scrollTop = 0; else s.scrollTop = Math.min(s.scrollTop + s.clientHeight, s.scrollHeight);
+            if (${jsLiteral(dir)} === 'top') s.scrollTop = 0; else s.scrollTop = Math.min(s.scrollTop + s.clientHeight, s.scrollHeight);
             return s.scrollTop;
           })()`
         )
@@ -2654,9 +2655,9 @@ export class DesignerController {
     const re = pattern instanceof RegExp ? pattern : new RegExp(pattern);
     return this.browser.evalValue<boolean>(
       `(() => {
-        const re = new RegExp(${JSON.stringify(re.source)}, ${JSON.stringify(re.flags)});
+        const re = new RegExp(${jsLiteral(re.source)}, ${jsLiteral(re.flags)});
         const btn = Array.from(document.querySelectorAll('button')).find(b => re.test((b.textContent || '').trim()));
-        if (!btn) throw new Error('button not found: ' + ${JSON.stringify(re.source)});
+        if (!btn) throw new Error('button not found: ' + ${jsLiteral(re.source)});
         btn.click();
         return true;
       })()`

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { xspawn, xspawnSync, WHICH, IS_WIN } from './cross-platform.ts';
 import { agentBrowserVersionSupported, REQUIRED_AGENT_BROWSER_VERSION, REQUIRED_BUN_VERSION } from './runtime-versions.ts';
+import { cdpHttpUrl, cdpPort } from './cdp-port.ts';
 import { DesignerController, withTabLock } from './designer-controller.ts';
 import { listSessions, getSession } from './session-store.ts';
 import { createBrowser } from './browser.ts';
@@ -719,9 +720,9 @@ async function checkAgentBrowser(): Promise<DoctorCheck> {
 }
 
 async function checkCdp(): Promise<DoctorCheck> {
-  const port = process.env.DESIGNER_CDP || '9222';
+  const port = cdpPort(process.env.DESIGNER_CDP);
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+    const res = await fetch(cdpHttpUrl(port, '/json/version'));
     if (!res.ok) return { name: `CDP at port ${port}`, status: 'fail', detail: `HTTP ${res.status}` };
     const j = await res.json() as { Browser?: string };
     return { name: `CDP at port ${port}`, status: 'ok', detail: j.Browser || 'connected' };
@@ -735,9 +736,9 @@ async function checkCdp(): Promise<DoctorCheck> {
 }
 
 async function checkOnDesignSurface(): Promise<DoctorCheck> {
-  const port = process.env.DESIGNER_CDP || '9222';
+  const port = cdpPort(process.env.DESIGNER_CDP);
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/list`);
+    const res = await fetch(cdpHttpUrl(port, '/json/list'));
     if (!res.ok) {
       return {
         name: 'claude.ai/design tab',
