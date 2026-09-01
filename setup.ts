@@ -11,7 +11,7 @@ const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
 const SKILL_DEST = path.join(SKILL_DEST_DIR, 'SKILL.md');
 const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
-const ALTERNATE_CHROME = isAlternateChromeBinary();
+const ALTERNATE_CHROME = isAlternateChromeBinary(process.env.CHROME_BIN);
 const DEFAULT_PORT = process.env.DESIGNER_CDP || '9222';
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 
@@ -382,14 +382,14 @@ export function mcpServerCommand(installedAvailable: boolean): string[] {
     : [process.execPath, path.join(REPO_ROOT, 'bin', 'designer.mjs'), 'mcp', 'serve'];
 }
 
-export function mcpRegistrationEnv(port: string, chromeBin = process.env.CHROME_BIN): string[] {
+export function mcpRegistrationEnv(port: string, chromeBin: string | undefined): string[] {
   const flags: string[] = [];
   if (port !== '9222') flags.push('-e', `DESIGNER_CDP=${port}`);
   if (chromeBin?.trim()) flags.push('-e', `CHROME_BIN=${chromeBin}`);
   return flags;
 }
 
-export function mcpManagedEnvMatches(output: string, port: string, chromeBin = process.env.CHROME_BIN): boolean {
+export function mcpManagedEnvMatches(output: string, port: string, chromeBin: string | undefined): boolean {
   const expected = new Map<string, string>();
   if (port !== '9222') expected.set('DESIGNER_CDP', port);
   if (chromeBin?.trim()) expected.set('CHROME_BIN', chromeBin);
@@ -410,11 +410,11 @@ function step6Mcp(port: string): boolean {
   }
   const list = xspawnSync('claude', ['mcp', 'list'], { stdio: 'pipe' });
   const stdout = list.stdout?.toString() || '';
-  const envFlags = mcpRegistrationEnv(port);
+  const envFlags = mcpRegistrationEnv(port, process.env.CHROME_BIN);
   if (/(\s|^)designer\b/i.test(stdout)) {
     const get = xspawnSync('claude', ['mcp', 'get', 'designer'], { stdio: 'pipe' });
     const detail = `${get.stdout?.toString() || ''}\n${get.stderr?.toString() || ''}`;
-    if (get.status === 0 && mcpManagedEnvMatches(detail, port)) {
+    if (get.status === 0 && mcpManagedEnvMatches(detail, port, process.env.CHROME_BIN)) {
       log('mcp', 'ok', 'Already registered with the requested browser settings.');
       return true;
     }

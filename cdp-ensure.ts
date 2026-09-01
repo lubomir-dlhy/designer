@@ -8,7 +8,7 @@ import { isCdpEnabled } from './cdp-env.ts';
 const PORT = process.env.DESIGNER_CDP || '9222';
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
-const ALTERNATE_CHROME = isAlternateChromeBinary();
+const ALTERNATE_CHROME = isAlternateChromeBinary(process.env.CHROME_BIN);
 
 async function isCdpUp(): Promise<boolean> {
   try {

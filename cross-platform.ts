@@ -56,7 +56,7 @@ function normalizedExecutablePath(value: string, platform: NodeJS.Platform): str
 // Canary, Chromium, etc.). The system Chrome cannot: on desktop it commonly
 // forwards the second launch to the existing process and drops the CDP flags.
 export function isAlternateChromeBinary(
-  configured: string | undefined = process.env.CHROME_BIN,
+  configured: string | undefined,
   systemChrome: string = defaultChromeBin(),
   platform: NodeJS.Platform = process.platform
 ): boolean {
