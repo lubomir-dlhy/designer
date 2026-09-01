@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { mcpManagedEnvMatches, mcpRegistrationEnv, mcpServerCommand } from '../setup.ts';
+import { mcpManagedEnvMatches, mcpRegistrationCommand, mcpRegistrationEnv, mcpServerCommand } from '../setup.ts';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -115,6 +115,28 @@ test('MCP registration persists alternate Chrome and non-default CDP settings', 
   );
   assert.equal(mcpManagedEnvMatches('Environment:\n', '9333', '/opt/chrome-for-testing'), false);
   assert.equal(mcpManagedEnvMatches('Environment:\n  DESIGNER_CDP=9333', '9222', undefined), false);
+});
+
+test('MCP registration puts the server name before variadic environment flags', () => {
+  const env = mcpRegistrationEnv('9333', '/Applications/Google Chrome Designer.app/Contents/MacOS/Google Chrome');
+  assert.deepEqual(mcpRegistrationCommand(env, ['bun', '/repo/bin/designer.mjs', 'mcp', 'serve']), [
+    'mcp',
+    'add',
+    '--scope',
+    'user',
+    '--transport',
+    'stdio',
+    'designer',
+    '-e',
+    'DESIGNER_CDP=9333',
+    '-e',
+    'CHROME_BIN=/Applications/Google Chrome Designer.app/Contents/MacOS/Google Chrome',
+    '--',
+    'bun',
+    '/repo/bin/designer.mjs',
+    'mcp',
+    'serve'
+  ]);
 });
 
 test('active package metadata and docs use the fork identity', async () => {
