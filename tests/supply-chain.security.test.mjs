@@ -60,6 +60,9 @@ test('documented external tooling and release tooling are exactly pinned', async
   assert.match(release, /node-version: '22\.14\.0'/);
   assert.match(release, /npm install -g npm@11\.5\.1/);
   assert.doesNotMatch(release, /npm@\^|npm@~|npm@latest/);
+  assert.match(release, /vars\.NPM_PUBLISH_ENABLED == 'true'/);
+  assert.match(release, /publish:\n(?:.|\n)*?permissions:\n\s+contents: read\n\s+id-token: write/);
+  assert.doesNotMatch(release, /^permissions:\n\s+contents: write\n\s+pull-requests: write\n\s+id-token: write/m);
 
   const smoke = await read('scripts/install-smoke.sh');
   assert.match(smoke, /oven\/bun:1\.4\.0@sha256:[a-f0-9]{64}/);
