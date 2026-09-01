@@ -13,7 +13,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-DOCKER_IMAGE="${DOCKER_IMAGE:-oven/bun:1.4.0}"
+# Pin the multi-platform manifest digest, not only the mutable image tag.
+DOCKER_IMAGE="${DOCKER_IMAGE:-oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6}"
 WORK_HOST="$(mktemp -d -t designer-smoke-XXXXXX)"
 trap 'rm -rf "$WORK_HOST"' EXIT
 

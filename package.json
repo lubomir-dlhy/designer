@@ -33,6 +33,7 @@
     "doctor": "bun cli.ts doctor",
     "test": "bun run check && bun test",
     "check": "tsc --noEmit",
+    "security:audit": "bun audit --audit-level=high && bun pm untrusted",
     "prepack": "bun run check",
     "probe": "bun scripts/probe.ts",
     "preflight": "bun scripts/ci-preflight.ts",
@@ -43,20 +44,20 @@
     "trace:analyze": "bun scripts/trace-analyze.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.120.0",
-    "@modelcontextprotocol/sdk": "^1.26.0",
-    "cross-spawn": "^7.0.6",
-    "fflate": "^0.8.3",
-    "zod": "^4.4.3"
+    "@anthropic-ai/sdk": "0.120.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "cross-spawn": "7.0.6",
+    "fflate": "0.8.3",
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.0",
-    "@types/cross-spawn": "^6.0.6",
-    "@types/node": "^26.0.0",
-    "typescript": "^6.0.3"
+    "@types/bun": "1.4.0",
+    "@types/cross-spawn": "6.0.6",
+    "@types/node": "26.2.0",
+    "typescript": "6.0.3"
   },
   "engines": {
-    "bun": ">=1.4.0"
+    "bun": "1.4.0"
   },
   "os": [
     "darwin",
@@ -71,6 +72,7 @@
     "scripts/designer-chrome.ps1",
     "selectors.json",
     "README.md",
+    "SECURITY.md",
     "LICENSE"
   ]
 }
