@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { xspawn, xspawnSync, WHICH, IS_WIN } from './cross-platform.ts';
+import { agentBrowserVersionSupported, REQUIRED_AGENT_BROWSER_VERSION, REQUIRED_BUN_VERSION } from './runtime-versions.ts';
 import { DesignerController, withTabLock } from './designer-controller.ts';
 import { listSessions, getSession } from './session-store.ts';
 import { createBrowser } from './browser.ts';
@@ -679,9 +680,8 @@ async function runDoctor(): Promise<DoctorCheck[]> {
 }
 
 function checkDeps(): DoctorCheck {
-  const [major = 0, minor = 0] = Bun.version.split('.').map((part) => Number.parseInt(part, 10));
-  if (!(major > 1 || (major === 1 && minor >= 4))) {
-    return { name: 'Bun runtime', status: 'fail', detail: `Bun ${Bun.version}; requires >=1.4.0` };
+  if (Bun.version !== REQUIRED_BUN_VERSION) {
+    return { name: 'Bun runtime', status: 'fail', detail: `Bun ${Bun.version}; requires exactly ${REQUIRED_BUN_VERSION}` };
   }
   const rootLock = path.join(REPO_ROOT, 'bun.lock');
   // Installed packages do not ship the repository lockfile; reaching this Bun
@@ -705,8 +705,16 @@ async function checkAgentBrowser(): Promise<DoctorCheck> {
     const c = xspawn('agent-browser', ['--version'], { stdio: 'pipe' });
     let v = '';
     c.stdout!.on('data', (d: Buffer) => (v += d.toString()));
-    c.on('error', () => resolve({ name: 'agent-browser installed', status: 'fail', detail: 'binary not found on PATH; install from https://github.com/agent-browser/agent-browser' }));
-    c.on('close', () => resolve({ name: 'agent-browser installed', status: 'ok', detail: v.trim() || 'present' }));
+    c.on('error', () => resolve({ name: 'agent-browser installed', status: 'fail', detail: `binary not found; install exactly ${REQUIRED_AGENT_BROWSER_VERSION}` }));
+    c.on('close', (code) => {
+      const detail = v.trim() || 'unknown version';
+      const ok = code === 0 && agentBrowserVersionSupported(detail);
+      resolve({
+        name: 'agent-browser installed',
+        status: ok ? 'ok' : 'fail',
+        detail: ok ? detail : `${detail}; requires exactly ${REQUIRED_AGENT_BROWSER_VERSION}`
+      });
+    });
   });
 }
 

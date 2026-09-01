@@ -42,7 +42,7 @@ permissions:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
@@ -76,15 +76,15 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         if: steps.release.outputs.release_created || inputs.publish-tag
         with:
-          node-version: '22'
+          node-version: '22.14.0'
           # No registry-url: setup-node would write an .npmrc that references
           # $NODE_AUTH_TOKEN, and npm hard-fails on unset env vars in config.
           # Trusted publishing needs no token; default registry is npmjs.
 
-      # Trusted publishing needs npm >= 11.5.1; node 20 bundles npm 10.x.
-      # Pin to ^11 so a future npm major can't silently change behavior here.
+      # Trusted publishing needs npm >= 11.5.1. Use the reviewed exact version;
+      # registry tooling must change only in a dedicated dependency PR.
       - if: steps.release.outputs.release_created || inputs.publish-tag
-        run: npm install -g npm@^11.5.1
+        run: npm install -g npm@11.5.1
 
       - if: steps.release.outputs.release_created || inputs.publish-tag
         run: bun ci

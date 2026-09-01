@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { REQUIRED_BUN_VERSION } from '../runtime-versions.ts';
 
 // Environment preflight for the daily-health probe.
 //
@@ -34,18 +35,15 @@ function report(ok: boolean, name: string, detail: string): void {
 
 // 1. Bun runtime satisfies the declared engine AND exposes native WebSocket.
 {
-  const engines = pkg.engines?.bun ?? '>=1.4.0';
-  const floor = (engines.match(/\d+(?:\.\d+)*/)?.[0] ?? '1.4.0').split('.').map(Number);
-  const current = Bun.version.split('.').map(Number);
-  const versionOk = (current[0] ?? 0) > (floor[0] ?? 1) ||
-    ((current[0] ?? 0) === (floor[0] ?? 1) && (current[1] ?? 0) >= (floor[1] ?? 4));
+  const engines = pkg.engines?.bun ?? REQUIRED_BUN_VERSION;
+  const versionOk = engines === REQUIRED_BUN_VERSION && Bun.version === REQUIRED_BUN_VERSION;
   const wsPresent = 'WebSocket' in globalThis;
   const ok = versionOk && wsPresent;
   report(ok, 'bun runtime', `Bun ${Bun.version}, engines "${engines}", WebSocket ${wsPresent ? 'present' : 'MISSING'}`);
   if (!ok) {
     failures.push(
       `Bun ${Bun.version} does not satisfy engines "${engines}" or lacks the global WebSocket. ` +
-        `The in-process CDP readers require Bun 1.4+; fix the runner/workflow runtime, do NOT read this as UI drift.`
+        `The in-process CDP readers require the reviewed Bun ${REQUIRED_BUN_VERSION} runtime; fix the runner/workflow runtime, do NOT read this as UI drift.`
     );
   }
 }

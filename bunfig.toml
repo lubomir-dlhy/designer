@@ -1,0 +1,11 @@
+[install]
+# Never write semver ranges when dependencies are added or updated.
+exact = true
+
+# Dependency lifecycle scripts are arbitrary code. This package has no native
+# dependency that needs them, so deny all install/prepare scripts explicitly.
+ignoreScripts = true
+
+# New registry releases must cool off for seven days before resolution. Existing
+# versions already authenticated by bun.lock remain reproducible and unaffected.
+minimumReleaseAge = 604800

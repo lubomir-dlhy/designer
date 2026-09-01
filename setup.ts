@@ -6,6 +6,7 @@ import { REPO_ROOT } from './repo-root.ts';
 import { defaultChromeBin, isAlternateChromeBinary, isChromeRunning, xspawnSync, WHICH, IS_WIN, IS_MAC, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
 import { getSelectors, presenceSelector } from './selectors.ts';
+import { agentBrowserVersionSupported, REQUIRED_AGENT_BROWSER_VERSION, REQUIRED_BUN_VERSION } from './runtime-versions.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
@@ -129,13 +130,12 @@ async function pollUntil(
 }
 
 function bunVersionSupported(version = Bun.version): boolean {
-  const [major = 0, minor = 0] = version.split('.').map((part) => Number.parseInt(part, 10));
-  return major > 1 || (major === 1 && minor >= 4);
+  return version === REQUIRED_BUN_VERSION;
 }
 
 async function step1BunInstall(): Promise<boolean> {
   if (!bunVersionSupported()) {
-    log('bun', 'fail', `Bun ${Bun.version} is too old; install Bun 1.4.0 or newer.`);
+    log('bun', 'fail', `Bun ${Bun.version} does not match the reviewed runtime; install Bun ${REQUIRED_BUN_VERSION}.`);
     return false;
   }
   log('bun', 'ok', `Bun ${Bun.version}`);
@@ -160,10 +160,15 @@ async function step1BunInstall(): Promise<boolean> {
 function step2AgentBrowser(): boolean {
   const r = xspawnSync('agent-browser', ['--version'], { stdio: 'pipe' });
   if (r.status !== 0) {
-    log('agent-browser', 'fail', 'not found on PATH. Install: bun add --global agent-browser');
+    log('agent-browser', 'fail', `not found on PATH. Install: bun add --global --exact agent-browser@${REQUIRED_AGENT_BROWSER_VERSION}`);
     return false;
   }
-  log('agent-browser', 'ok', r.stdout?.toString().trim() || 'present');
+  const version = `${r.stdout?.toString() || ''}\n${r.stderr?.toString() || ''}`.trim();
+  if (!agentBrowserVersionSupported(version)) {
+    log('agent-browser', 'fail', `${version || 'unknown version'}; requires exactly ${REQUIRED_AGENT_BROWSER_VERSION}`);
+    return false;
+  }
+  log('agent-browser', 'ok', version);
   return true;
 }
 

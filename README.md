@@ -18,8 +18,8 @@ Human describes intent → agent surveys codebase and prompts Claude Design → 
 
 ### Prerequisites
 
-- [Bun 1.4+](https://bun.com/docs/installation), plus Google Chrome.
-- `agent-browser` on PATH: `bun add --global agent-browser` (or `brew install agent-browser`).
+- [Bun 1.4.0](https://bun.com/docs/installation), plus Google Chrome.
+- `agent-browser` 0.35.2 on PATH: `bun add --global --exact agent-browser@0.35.2`.
 
 ### Install from this fork
 
@@ -36,8 +36,8 @@ The package name reserved for a future registry release is
 
 ### What `designer setup` does
 
-1. Verify Bun 1.4+ and synchronize dependencies from `bun.lock`.
-2. Check `agent-browser` on PATH.
+1. Verify Bun 1.4.0 and synchronize dependencies from `bun.lock`.
+2. Check `agent-browser` 0.35.2 on PATH.
 3. Ask you to quit normal Chrome, unless `CHROME_BIN` selects a separate Chrome for Testing/Canary executable.
 4. Launch debug Chrome (`--remote-debugging-port=9222`, profile at `~/.chrome-designer-profile/`).
 5. Poll until you sign in and land on `/design`.
@@ -72,7 +72,7 @@ your everyday Chrome and Designer remain independent:
 
 ```bash
 mkdir -p "$HOME/.cache/designer-cft"
-bunx @puppeteer/browsers@latest install chrome@stable \
+bunx @puppeteer/browsers@3.2.1 install chrome@152.0.7977.64 \
   --path "$HOME/.cache/designer-cft"
 
 # Use the executable path printed by the install command.
@@ -86,6 +86,10 @@ Setup stores both variables in the Claude Code MCP registration. Thereafter the
 MCP can auto-launch Chrome for Testing on port 9333 even while normal Chrome is
 running. The testing browser still uses `~/.chrome-designer-profile/`, so its
 Claude login persists without exposing the cookies from your everyday profile.
+
+Dependency and browser versions above are intentionally exact. Review upstream
+release notes and update the pins in a dedicated PR; do not replace them with
+`latest`, caret, tilde, or wildcard ranges.
 
 ## CLI
 
