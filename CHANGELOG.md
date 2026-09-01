@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.27](https://github.com/lubomir-dlhy/designer/compare/v0.3.26...v0.3.27) (2026-09-01)
+
+
+### Features
+
+* **browser:** support parallel Chrome for Testing ([#6](https://github.com/lubomir-dlhy/designer/issues/6)) ([332b10e](https://github.com/lubomir-dlhy/designer/commit/332b10ed5990117f22f734a80c33fe672be8b6e1))
+* **runtime:** migrate to Bun 1.4 ([#3](https://github.com/lubomir-dlhy/designer/issues/3)) ([de66a47](https://github.com/lubomir-dlhy/designer/commit/de66a47ccd7cb8539869638087f8dff37e93afec))
+
+
+### Bug Fixes
+
+* **security:** harden local preview and supply chain ([#1](https://github.com/lubomir-dlhy/designer/issues/1)) ([21160b1](https://github.com/lubomir-dlhy/designer/commit/21160b1106a1ee7a6332b76bf3cb20bd924162b7))
+* **setup:** register local MCP executable ([#4](https://github.com/lubomir-dlhy/designer/issues/4)) ([cb81f83](https://github.com/lubomir-dlhy/designer/commit/cb81f8392374d8634c869afc25cd1538afb1571e))
+* **setup:** register MCP env after server name ([#7](https://github.com/lubomir-dlhy/designer/issues/7)) ([2892d8b](https://github.com/lubomir-dlhy/designer/commit/2892d8b12f9796046b58d156fc8338313cf12e3b))
+
 ## [0.3.26](https://github.com/pro-vi/designer/compare/v0.3.25...v0.3.26) (2026-08-18)
 
 
