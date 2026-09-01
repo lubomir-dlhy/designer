@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { mcpServerCommand } from '../setup.ts';
+import { mcpManagedEnvMatches, mcpRegistrationEnv, mcpServerCommand } from '../setup.ts';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -95,6 +95,26 @@ test('local setup registers an executable MCP command without a global install',
   assert.equal(local[0], process.execPath);
   assert.equal(local[1], path.join(root, 'bin', 'designer.mjs'));
   assert.deepEqual(local.slice(2), ['mcp', 'serve']);
+});
+
+test('MCP registration persists alternate Chrome and non-default CDP settings', () => {
+  assert.deepEqual(mcpRegistrationEnv('9222', undefined), []);
+  assert.deepEqual(mcpRegistrationEnv('9333', '/opt/chrome-for-testing'), [
+    '-e',
+    'DESIGNER_CDP=9333',
+    '-e',
+    'CHROME_BIN=/opt/chrome-for-testing'
+  ]);
+  assert.equal(
+    mcpManagedEnvMatches(
+      'Environment:\n  DESIGNER_CDP=9333\n  CHROME_BIN=/opt/chrome-for-testing',
+      '9333',
+      '/opt/chrome-for-testing'
+    ),
+    true
+  );
+  assert.equal(mcpManagedEnvMatches('Environment:\n', '9333', '/opt/chrome-for-testing'), false);
+  assert.equal(mcpManagedEnvMatches('Environment:\n  DESIGNER_CDP=9333', '9222', undefined), false);
 });
 
 test('active package metadata and docs use the fork identity', async () => {

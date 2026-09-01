@@ -2,12 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { defaultChromeBin, isChromeRunning, QUIT_CHROME_HINT } from './cross-platform.ts';
+import { defaultChromeBin, isAlternateChromeBinary, isChromeRunning, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { isCdpEnabled } from './cdp-env.ts';
 
 const PORT = process.env.DESIGNER_CDP || '9222';
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
+const ALTERNATE_CHROME = isAlternateChromeBinary(process.env.CHROME_BIN);
 
 async function isCdpUp(): Promise<boolean> {
   try {
@@ -26,7 +27,8 @@ function sleep(ms: number): Promise<void> {
 // Auto-launch is gated on three conditions:
 //   1. CDP is down (no existing debug server)
 //   2. The dedicated profile exists (user already consented once via `designer setup`)
-//   3. No non-debug Chrome is running (launching would either no-op or steal focus)
+//   3. No non-debug Chrome is running, unless CHROME_BIN selects a genuinely
+//      different executable such as Chrome for Testing or Canary.
 // Otherwise: return an actionable error the caller can surface to the user.
 export async function ensureCdpUp(): Promise<void> {
   // Respect the explicit opt-out (DESIGNER_CDP=''): never probe or auto-launch
@@ -43,7 +45,7 @@ export async function ensureCdpUp(): Promise<void> {
     );
   }
 
-  if (isChromeRunning()) {
+  if (isChromeRunning() && !ALTERNATE_CHROME) {
     throw new Error(
       `CDP not up on :${PORT} and a non-debug Chrome is already running. ${QUIT_CHROME_HINT} Then retry, or run: designer setup`
     );
