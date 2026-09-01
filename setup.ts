@@ -389,6 +389,13 @@ export function mcpRegistrationEnv(port: string, chromeBin: string | undefined):
   return flags;
 }
 
+export function mcpRegistrationCommand(envFlags: string[], serverCommand: string[]): string[] {
+  // Claude's `--env <env...>` option is variadic. Keep the positional server
+  // name before the first `-e`; otherwise the parser consumes the name as one
+  // more environment entry when environment values contain spaces.
+  return ['mcp', 'add', '--scope', 'user', '--transport', 'stdio', 'designer', ...envFlags, '--', ...serverCommand];
+}
+
 export function mcpManagedEnvMatches(output: string, port: string, chromeBin: string | undefined): boolean {
   const expected = new Map<string, string>();
   if (port !== '9222') expected.set('DESIGNER_CDP', port);
@@ -436,7 +443,7 @@ function step6Mcp(port: string): boolean {
   // working after the browser exits while the user's normal Chrome stays open.
   const installed = xspawnSync(WHICH, ['designer'], { stdio: 'pipe' });
   const serverCommand = mcpServerCommand(installed.status === 0);
-  const cmd = ['mcp', 'add', '--scope', 'user', '--transport', 'stdio', ...envFlags, 'designer', '--', ...serverCommand];
+  const cmd = mcpRegistrationCommand(envFlags, serverCommand);
   log('mcp', 'wait', `Registering: claude ${cmd.join(' ')}`);
   const reg = xspawnSync('claude', cmd, { stdio: 'inherit' });
   if (reg.status !== 0) {
