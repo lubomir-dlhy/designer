@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { chromeRunningProbe, LINUX_CHROME_PROCESS_NAMES } from '../cross-platform.ts';
+import { chromeRunningProbe, isAlternateChromeBinary, LINUX_CHROME_PROCESS_NAMES } from '../cross-platform.ts';
 
 // Regression coverage for #114: on Linux the probe was `pgrep -f chrome`, which
 // matches the whole command line. setup.ts treats a match as "a non-debug Chrome
@@ -50,4 +50,20 @@ test('the macOS and Windows branches are unchanged', () => {
   const win = chromeRunningProbe('win32');
   assert.equal(win.cmd, 'tasklist');
   assert.deepEqual(win.args, ['/FI', 'IMAGENAME eq chrome.exe', '/NH', '/FO', 'CSV']);
+});
+
+test('an explicit alternate browser can run beside normal Chrome', () => {
+  assert.equal(isAlternateChromeBinary(undefined, '/Applications/Google Chrome'), false);
+  assert.equal(
+    isAlternateChromeBinary('/Applications/Google Chrome', '/Applications/Google Chrome'),
+    false
+  );
+  assert.equal(
+    isAlternateChromeBinary('/Users/me/chrome-for-testing', '/Applications/Google Chrome'),
+    true
+  );
+  assert.equal(
+    isAlternateChromeBinary('C:\\Chrome\\chrome.exe', 'c:\\chrome\\CHROME.EXE', 'win32'),
+    false
+  );
 });

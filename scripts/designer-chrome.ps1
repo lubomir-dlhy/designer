@@ -35,9 +35,13 @@ try {
 
 # Warn if a non-debug Chrome is up
 if (Get-Process -Name chrome -ErrorAction SilentlyContinue) {
-  Write-Warning "[designer-chrome] Chrome is already running."
-  Write-Warning "                  If it's NOT a debug-mode Chrome, the launched window may not get the debug port."
-  Write-Warning "                  Close existing Chrome windows first, or accept the risk and continue."
+  if ($env:CHROME_BIN) {
+    Write-Host "[designer-chrome] Normal Chrome is running; launching configured CHROME_BIN alongside it."
+  } else {
+    Write-Warning "[designer-chrome] Chrome is already running."
+    Write-Warning "                  The system browser may drop the debug flags on a second launch."
+    Write-Warning "                  Close Chrome first, or set CHROME_BIN to Chrome for Testing/Canary."
+  }
 }
 
 Write-Host "[designer-chrome] Launching: $Chrome --remote-debugging-port=$Port --user-data-dir=$Profile"

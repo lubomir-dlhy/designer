@@ -48,9 +48,13 @@ else
   QUIT_HINT="Quit existing Chrome (or 'pkill chrome') first"
 fi
 if pgrep "$PGREP_MODE" "$CHROME_PAT" >/dev/null; then
-  echo "[designer-chrome] WARNING: Chrome is already running." >&2
-  echo "                  If it's NOT a debug-mode Chrome, the launched window may not get the debug port." >&2
-  echo "                  $QUIT_HINT, or accept the risk and continue." >&2
+  if [ -n "$CHROME_BIN" ]; then
+    echo "[designer-chrome] Normal Chrome is running; launching configured CHROME_BIN alongside it." >&2
+  else
+    echo "[designer-chrome] WARNING: Chrome is already running." >&2
+    echo "                  The system browser may drop the debug flags on a second launch." >&2
+    echo "                  $QUIT_HINT, or set CHROME_BIN to Chrome for Testing/Canary." >&2
+  fi
 fi
 
 echo "[designer-chrome] Launching: $CHROME --remote-debugging-port=$PORT --user-data-dir=$PROFILE"

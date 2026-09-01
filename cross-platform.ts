@@ -41,6 +41,29 @@ export function defaultChromeBin(): string {
   return '/usr/bin/google-chrome';
 }
 
+function normalizedExecutablePath(value: string, platform: NodeJS.Platform): string {
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(value);
+  } catch {
+    resolved = path.resolve(value);
+  }
+  return platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+// An explicitly configured browser binary can run beside the user's normal
+// Chrome when it is a genuinely different executable (Chrome for Testing,
+// Canary, Chromium, etc.). The system Chrome cannot: on desktop it commonly
+// forwards the second launch to the existing process and drops the CDP flags.
+export function isAlternateChromeBinary(
+  configured: string | undefined = process.env.CHROME_BIN,
+  systemChrome: string = defaultChromeBin(),
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  if (!configured?.trim()) return false;
+  return normalizedExecutablePath(configured, platform) !== normalizedExecutablePath(systemChrome, platform);
+}
+
 // Process NAMES a real Chrome/Chromium main process carries on Linux, as an
 // anchored `pgrep -x` alternation. Two constraints shaped this list (#114):
 //

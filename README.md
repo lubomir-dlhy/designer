@@ -38,7 +38,7 @@ The package name reserved for a future registry release is
 
 1. Verify Bun 1.4+ and synchronize dependencies from `bun.lock`.
 2. Check `agent-browser` on PATH.
-3. Ask you to quit a non-debug Chrome (polls until done).
+3. Ask you to quit normal Chrome, unless `CHROME_BIN` selects a separate Chrome for Testing/Canary executable.
 4. Launch debug Chrome (`--remote-debugging-port=9222`, profile at `~/.chrome-designer-profile/`).
 5. Poll until you sign in and land on `/design`.
 6. Install the `designer-loop` skill at `~/.claude/skills/designer-loop/` (skipped if already present — respects dotfile symlinks).
@@ -62,6 +62,30 @@ Chrome, which `./bin/designer.mjs setup` launches.
 - **Auto-launch.** MCP auto-launches debug Chrome on the first tool call if the profile exists.
 - **Bot detection.** Real Chrome + user-controlled login — not headless. Cloudflare + Google OAuth see a normal session. First login may trigger a Google new-device prompt.
 - **`DESIGNER_CDP=9222`** is the default. Export it only when using a different port or when you want the setting explicit for direct CLI calls.
+
+### Run normal Chrome and Designer together
+
+Chrome 136+ requires automation to use a non-default profile. On macOS, a
+second launch of the same system Chrome binary can also forward to the existing
+process and lose its CDP flags. Use a separate Chrome for Testing executable so
+your everyday Chrome and Designer remain independent:
+
+```bash
+mkdir -p "$HOME/.cache/designer-cft"
+bunx @puppeteer/browsers@latest install chrome@stable \
+  --path "$HOME/.cache/designer-cft"
+
+# Use the executable path printed by the install command.
+export CHROME_BIN="/absolute/path/to/Google Chrome for Testing"
+export DESIGNER_CDP=9333
+
+./bin/designer.mjs setup
+```
+
+Setup stores both variables in the Claude Code MCP registration. Thereafter the
+MCP can auto-launch Chrome for Testing on port 9333 even while normal Chrome is
+running. The testing browser still uses `~/.chrome-designer-profile/`, so its
+Claude login persists without exposing the cookies from your everyday profile.
 
 ## CLI
 

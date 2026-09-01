@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { REPO_ROOT } from './repo-root.ts';
-import { defaultChromeBin, isChromeRunning, xspawnSync, WHICH, IS_WIN, IS_MAC, QUIT_CHROME_HINT } from './cross-platform.ts';
+import { defaultChromeBin, isAlternateChromeBinary, isChromeRunning, xspawnSync, WHICH, IS_WIN, IS_MAC, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
 import { getSelectors, presenceSelector } from './selectors.ts';
 
@@ -11,6 +11,7 @@ const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
 const SKILL_DEST = path.join(SKILL_DEST_DIR, 'SKILL.md');
 const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
+const ALTERNATE_CHROME = isAlternateChromeBinary();
 const DEFAULT_PORT = process.env.DESIGNER_CDP || '9222';
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 
@@ -199,7 +200,7 @@ async function step3Chrome(port: string): Promise<boolean> {
     }
     // fall through to the launch path
   }
-  if (chromeRunning()) {
+  if (chromeRunning() && !ALTERNATE_CHROME) {
     log('chrome', 'wait', `A non-debug Chrome is running. ${QUIT_CHROME_HINT} I am polling.`);
     const quit = await pollUntil('chrome', () => !chromeRunning(), {
       intervalMs: 1000,
@@ -210,6 +211,8 @@ async function step3Chrome(port: string): Promise<boolean> {
       log('chrome', 'fail', 'Timed out waiting for Chrome to quit. Quit manually then re-run setup.');
       return false;
     }
+  } else if (chromeRunning()) {
+    log('chrome', 'ok', `Normal Chrome is running; using alternate browser ${CHROME_BIN} alongside it.`);
   }
   log('chrome', 'wait', `Launching debug Chrome on :${port} with --user-data-dir=${PROFILE}`);
   if (!fs.existsSync(CHROME_BIN)) {
@@ -379,6 +382,26 @@ export function mcpServerCommand(installedAvailable: boolean): string[] {
     : [process.execPath, path.join(REPO_ROOT, 'bin', 'designer.mjs'), 'mcp', 'serve'];
 }
 
+export function mcpRegistrationEnv(port: string, chromeBin = process.env.CHROME_BIN): string[] {
+  const flags: string[] = [];
+  if (port !== '9222') flags.push('-e', `DESIGNER_CDP=${port}`);
+  if (chromeBin?.trim()) flags.push('-e', `CHROME_BIN=${chromeBin}`);
+  return flags;
+}
+
+export function mcpManagedEnvMatches(output: string, port: string, chromeBin = process.env.CHROME_BIN): boolean {
+  const expected = new Map<string, string>();
+  if (port !== '9222') expected.set('DESIGNER_CDP', port);
+  if (chromeBin?.trim()) expected.set('CHROME_BIN', chromeBin);
+
+  for (const key of ['DESIGNER_CDP', 'CHROME_BIN']) {
+    const line = output.split(/\r?\n/).find((candidate) => candidate.trimStart().startsWith(key));
+    const value = expected.get(key);
+    if (value === undefined ? line !== undefined : !line?.includes(value)) return false;
+  }
+  return true;
+}
+
 function step6Mcp(port: string): boolean {
   const claudeBin = xspawnSync(WHICH, ['claude'], { stdio: 'pipe' });
   if (claudeBin.status !== 0) {
@@ -387,9 +410,20 @@ function step6Mcp(port: string): boolean {
   }
   const list = xspawnSync('claude', ['mcp', 'list'], { stdio: 'pipe' });
   const stdout = list.stdout?.toString() || '';
+  const envFlags = mcpRegistrationEnv(port);
   if (/(\s|^)designer\b/i.test(stdout)) {
-    log('mcp', 'ok', 'Already registered.');
-    return true;
+    const get = xspawnSync('claude', ['mcp', 'get', 'designer'], { stdio: 'pipe' });
+    const detail = `${get.stdout?.toString() || ''}\n${get.stderr?.toString() || ''}`;
+    if (get.status === 0 && mcpManagedEnvMatches(detail, port)) {
+      log('mcp', 'ok', 'Already registered with the requested browser settings.');
+      return true;
+    }
+    log('mcp', 'wait', 'Browser settings changed; refreshing the existing registration.');
+    const remove = xspawnSync('claude', ['mcp', 'remove', 'designer', '--scope', 'user'], { stdio: 'inherit' });
+    if (remove.status !== 0) {
+      log('mcp', 'fail', `claude mcp remove exited ${remove.status}`);
+      return false;
+    }
   }
   // Prefer the installed command. In a source checkout it may not exist on
   // PATH, so fall back to the current Bun executable plus this package's
@@ -398,8 +432,8 @@ function step6Mcp(port: string): boolean {
   //
   // claude mcp add supports `-e KEY=VALUE` for env vars, which works on every
   // OS — replaces the Unix-only `env DESIGNER_CDP=X` prefix the prior version
-  // used. We only emit it when the port is non-default to keep the config tidy.
-  const envFlags = port === '9222' ? [] : ['-e', `DESIGNER_CDP=${port}`];
+  // used. Persist an alternate Chrome binary too, so MCP auto-relaunch keeps
+  // working after the browser exits while the user's normal Chrome stays open.
   const installed = xspawnSync(WHICH, ['designer'], { stdio: 'pipe' });
   const serverCommand = mcpServerCommand(installed.status === 0);
   const cmd = ['mcp', 'add', '--scope', 'user', '--transport', 'stdio', ...envFlags, 'designer', '--', ...serverCommand];
