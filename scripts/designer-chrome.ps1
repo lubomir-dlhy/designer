@@ -45,6 +45,12 @@ if (Get-Process -Name chrome -ErrorAction SilentlyContinue) {
 }
 
 Write-Host "[designer-chrome] Launching: $Chrome --remote-debugging-port=$Port --user-data-dir=$Profile"
+# Anti-automation flag (stealth) is on by default; DESIGNER_STEALTH=0 opts out.
+# Mirrors stealthChromeArgs() in stealth-mode.ts.
+$StealthArgs = @('--disable-blink-features=AutomationControlled')
+if ($env:DESIGNER_STEALTH -eq '0' -or $env:DESIGNER_STEALTH -eq 'false') {
+  $StealthArgs = @()
+}
 $HeadlessArgs = @()
 if ($env:DESIGNER_HEADLESS -eq '1' -or $env:DESIGNER_HEADLESS -eq 'true') {
   $HeadlessArgs = @('--headless=new')
@@ -60,5 +66,6 @@ if ($env:DESIGNER_HEADLESS -eq '1' -or $env:DESIGNER_HEADLESS -eq 'true') {
   "--no-first-run" `
   "--no-default-browser-check" `
   "--disable-search-engine-choice-screen" `
+  $StealthArgs `
   $HeadlessArgs `
   "https://claude.ai/design"

@@ -58,6 +58,12 @@ if pgrep "$PGREP_MODE" "$CHROME_PAT" >/dev/null; then
 fi
 
 echo "[designer-chrome] Launching: $CHROME --remote-debugging-port=$PORT --user-data-dir=$PROFILE"
+# Anti-automation flag (stealth) is on by default; DESIGNER_STEALTH=0 opts out.
+# Mirrors stealthChromeArgs() in stealth-mode.ts.
+STEALTH_ARGS=(--disable-blink-features=AutomationControlled)
+if [ "${DESIGNER_STEALTH:-1}" = "0" ] || [ "${DESIGNER_STEALTH:-}" = "false" ]; then
+  STEALTH_ARGS=()
+fi
 HEADLESS_ARGS=()
 if [ "${DESIGNER_HEADLESS:-0}" = "1" ] || [ "${DESIGNER_HEADLESS:-}" = "true" ]; then
   HEADLESS_ARGS=(--headless=new)
@@ -73,5 +79,6 @@ exec "$CHROME" \
   --no-first-run \
   --no-default-browser-check \
   --disable-search-engine-choice-screen \
+  "${STEALTH_ARGS[@]}" \
   "${HEADLESS_ARGS[@]}" \
   "https://claude.ai/design"

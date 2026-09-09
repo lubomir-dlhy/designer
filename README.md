@@ -61,6 +61,8 @@ Chrome, which `./bin/designer.mjs setup` launches.
 - **Dedicated profile.** Chrome 136+ blocks `--remote-debugging-port` on the default profile. Login to `~/.chrome-designer-profile/` persists.
 - **Auto-launch.** MCP auto-launches debug Chrome on the first tool call if the profile exists.
 - **Bot detection.** Visible Chrome is the default for first login and Cloudflare recovery. After login, set `DESIGNER_HEADLESS=1` to reuse the dedicated profile without a visible window; if authentication or Cloudflare blocks it, temporarily relaunch without that variable.
+- **Stealth (default on).** The debug Chrome launches with `--disable-blink-features=AutomationControlled`, so `navigator.webdriver` stays `false` and the automation-controlled surfaces are absent. It's cookie-safe and native — no Docker, no custom engine. Opt out with `DESIGNER_STEALTH=0`. This strips automation *tells* only; it does not spoof the fingerprint (real Chrome already presents a genuine one). Engine-level fingerprint spoofing (canvas/WebGL/UA) is a separate, heavier browser and is out of scope here.
+- **One Chrome build per profile.** The signed-in session in `~/.chrome-designer-profile/` is encrypted with the launching browser's OS keystore key. Opening the same profile with a *different* Chrome build (e.g. Google Chrome vs Chrome for Testing) rewrites that store and silently invalidates the login. Keep `CHROME_BIN` pinned to one build.
 - **`DESIGNER_CDP=9222`** is the default. Export it only when using a different port or when you want the setting explicit for direct CLI calls.
 
 ### Run normal Chrome and Designer together

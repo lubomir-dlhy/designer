@@ -6,6 +6,7 @@ import { defaultChromeBin, isAlternateChromeBinary, isChromeRunning, QUIT_CHROME
 import { isCdpEnabled } from './cdp-env.ts';
 import { assertLoopbackWebSocketUrl, cdpHttpUrl, cdpPort } from './cdp-port.ts';
 import { designerHeadless, headlessChromeArgs } from './chrome-mode.ts';
+import { stealthChromeArgs } from './stealth-mode.ts';
 
 const PORT = cdpPort(process.env.DESIGNER_CDP);
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
@@ -53,6 +54,7 @@ function launchChrome(headless: boolean, url = 'https://claude.ai/design'): void
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-search-engine-choice-screen',
+      ...stealthChromeArgs(),
       ...headlessChromeArgs(headless),
       url
     ],
