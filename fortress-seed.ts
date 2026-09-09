@@ -72,14 +72,21 @@ class Cdp {
   }
 }
 
-// Open a fresh tab on claude.ai/design and return its attached session id.
-async function openDesignTab(c: Cdp): Promise<string> {
+// Open a fresh tab on claude.ai/design and return its target + session ids. The
+// caller closes the target when done (closeTab) so we never leave orphan tabs
+// behind — several of them would make agent-browser's --pin-tab ambiguous or
+// bind a tab that then vanishes (tab_gone).
+async function openDesignTab(c: Cdp): Promise<{ targetId: string; sessionId: string }> {
   const { targetId } = await c.send<{ targetId: string }>('Target.createTarget', { url: 'https://claude.ai/design' });
   const { sessionId } = await c.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
   await c.send('Page.enable', {}, sessionId);
   await c.send('Network.enable', {}, sessionId);
   await c.send('Runtime.enable', {}, sessionId);
-  return sessionId;
+  return { targetId, sessionId };
+}
+
+async function closeTab(c: Cdp, targetId: string): Promise<void> {
+  await c.send('Target.closeTarget', { targetId }).catch(() => {});
 }
 
 export interface ClaudeAuth {
@@ -92,19 +99,23 @@ export interface ClaudeAuth {
 export async function checkClaudeAuth(port: string, settleMs = 4000): Promise<ClaudeAuth> {
   const c = await Cdp.open(port);
   try {
-    const sessionId = await openDesignTab(c);
-    await new Promise((r) => setTimeout(r, settleMs));
-    const r = await c.send<{ result: { value: string } }>(
-      'Runtime.evaluate',
-      {
-        expression: `(async()=>{try{const r=await fetch('/api/organizations',{headers:{accept:'application/json'},credentials:'include'});if(!r.ok)return JSON.stringify({status:r.status});const o=await r.json();return JSON.stringify({status:200,org:Array.isArray(o)&&o[0]?(o[0].name||o[0].uuid):null});}catch(e){return JSON.stringify({status:0});}})()`,
-        returnByValue: true,
-        awaitPromise: true
-      },
-      sessionId
-    );
-    const parsed = JSON.parse(r.result?.value ?? '{"status":0}') as { status: number; org?: string | null };
-    return { authed: parsed.status === 200, org: parsed.org ?? null };
+    const { targetId, sessionId } = await openDesignTab(c);
+    try {
+      await new Promise((r) => setTimeout(r, settleMs));
+      const r = await c.send<{ result: { value: string } }>(
+        'Runtime.evaluate',
+        {
+          expression: `(async()=>{try{const r=await fetch('/api/organizations',{headers:{accept:'application/json'},credentials:'include'});if(!r.ok)return JSON.stringify({status:r.status});const o=await r.json();return JSON.stringify({status:200,org:Array.isArray(o)&&o[0]?(o[0].name||o[0].uuid):null});}catch(e){return JSON.stringify({status:0});}})()`,
+          returnByValue: true,
+          awaitPromise: true
+        },
+        sessionId
+      );
+      const parsed = JSON.parse(r.result?.value ?? '{"status":0}') as { status: number; org?: string | null };
+      return { authed: parsed.status === 200, org: parsed.org ?? null };
+    } finally {
+      await closeTab(c, targetId);
+    }
   } finally {
     c.close();
   }
@@ -123,10 +134,14 @@ export async function seedClaudeSession(fromPort: string, toPort: string): Promi
   const src = await Cdp.open(fromPort);
   let claude: Cookie[];
   try {
-    const sessionId = await openDesignTab(src);
-    await new Promise((r) => setTimeout(r, 6000));
-    const { cookies } = await src.send<{ cookies: Cookie[] }>('Network.getAllCookies', {}, sessionId);
-    claude = cookies.filter(isClaudeCookie);
+    const { targetId, sessionId } = await openDesignTab(src);
+    try {
+      await new Promise((r) => setTimeout(r, 6000));
+      const { cookies } = await src.send<{ cookies: Cookie[] }>('Network.getAllCookies', {}, sessionId);
+      claude = cookies.filter(isClaudeCookie);
+    } finally {
+      await closeTab(src, targetId);
+    }
   } finally {
     src.close();
   }
