@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
@@ -23,6 +24,46 @@ export const xspawnSync = crossSpawn.sync;
 // Returns the `which` / `where` command name for the current OS.
 export const WHICH = IS_WIN ? 'where' : 'which';
 
+// Absolute install locations to try when agent-browser isn't on $PATH — the case
+// for GUI/launchd-spawned MCP servers (Codex, Claude Desktop) with a minimal PATH.
+export function agentBrowserCandidates(
+  home = os.homedir(),
+  platform: NodeJS.Platform = process.platform
+): string[] {
+  if (platform === 'win32') {
+    const appdata = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    const localappdata = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    return [
+      path.join(appdata, 'npm', 'agent-browser.cmd'),
+      path.join(home, '.bun', 'bin', 'agent-browser.exe'),
+      path.join(localappdata, 'agent-browser', 'agent-browser.exe')
+    ];
+  }
+  return [
+    '/opt/homebrew/bin/agent-browser', // Homebrew (Apple Silicon)
+    '/usr/local/bin/agent-browser', // Homebrew (Intel) / manual
+    path.join(home, '.bun', 'bin', 'agent-browser'), // bun global
+    path.join(home, '.local', 'bin', 'agent-browser'),
+    '/usr/bin/agent-browser'
+  ];
+}
+
+// Resolve agent-browser: DESIGNER_AGENT_BROWSER_BIN, else $PATH, else the known
+// install locations, else the bare name (so a real miss fails with a clear error).
+export function resolveAgentBrowserBin(): string {
+  const explicit = process.env.DESIGNER_AGENT_BROWSER_BIN?.trim();
+  if (explicit) return explicit;
+  const found = nodeSpawnSync(WHICH, ['agent-browser'], { stdio: 'pipe' });
+  if (found.status === 0) {
+    const line = found.stdout?.toString().split(/\r?\n/).find((l) => l.trim());
+    if (line?.trim()) return line.trim();
+  }
+  for (const candidate of agentBrowserCandidates()) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return 'agent-browser';
+}
+
 // Default Chrome binary path per OS. Override with the CHROME_BIN env var.
 export function defaultChromeBin(): string {
   if (IS_WIN) {
@@ -39,6 +80,45 @@ export function defaultChromeBin(): string {
     if (fs.existsSync(c)) return c;
   }
   return '/usr/bin/google-chrome';
+}
+
+// designer's pinned Chrome for Testing, installed under this cache dir by
+// `@puppeteer/browsers` (see README). Using it consistently keeps one build per
+// profile, so the seeded login is never invalidated by a build mismatch.
+export const DESIGNER_CFT_DIR = path.join(os.homedir(), '.cache', 'designer-cft');
+
+export function managedChromeForTesting(dir = DESIGNER_CFT_DIR, platform: NodeJS.Platform = process.platform): string | null {
+  const root = path.join(dir, 'chrome');
+  let versions: string[];
+  try {
+    versions = fs.readdirSync(root).sort().reverse();
+  } catch {
+    return null;
+  }
+  const rel =
+    platform === 'win32'
+      ? [['chrome-win64', 'chrome.exe']]
+      : platform === 'darwin'
+        ? [
+            ['chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
+            ['chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing']
+          ]
+        : [['chrome-linux64', 'chrome']];
+  for (const v of versions) {
+    for (const parts of rel) {
+      const bin = path.join(root, v, ...parts);
+      if (fs.existsSync(bin)) return bin;
+    }
+  }
+  return null;
+}
+
+// Chrome for designer: explicit CHROME_BIN, else the managed pinned CfT (kept
+// consistent across launchers), else the system Chrome.
+export function resolveChromeBin(): string {
+  const explicit = process.env.CHROME_BIN?.trim();
+  if (explicit) return explicit;
+  return managedChromeForTesting() ?? defaultChromeBin();
 }
 
 function normalizedExecutablePath(value: string, platform: NodeJS.Platform): string {

@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
 import { agentBrowserCdp } from './cdp-port.ts';
-import { xspawn } from './cross-platform.ts';
+import { xspawn, resolveAgentBrowserBin } from './cross-platform.ts';
 
-const BIN = process.env.DESIGNER_AGENT_BROWSER_BIN || 'agent-browser';
+// Resolved once at load: honors DESIGNER_AGENT_BROWSER_BIN, else $PATH, else the
+// known install locations — so designer finds agent-browser under GUI/minimal-PATH
+// launchers (Codex, Claude Desktop) without any per-config override.
+const BIN = resolveAgentBrowserBin();
 const DEFAULT_SESSION = process.env.DESIGNER_SESSION_NAME || 'designer';
 // Default to the dedicated debug Chrome on :9222. Without this, callers that
 // don't export DESIGNER_CDP (e.g. codex shelling `designer` directly) silently

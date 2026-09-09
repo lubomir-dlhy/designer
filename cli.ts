@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import fs from 'node:fs';
 import path from 'node:path';
-import { xspawn, xspawnSync, WHICH, IS_WIN } from './cross-platform.ts';
+import { xspawn, xspawnSync, WHICH, IS_WIN, resolveAgentBrowserBin } from './cross-platform.ts';
 import { agentBrowserVersionSupported, REQUIRED_AGENT_BROWSER_VERSION, REQUIRED_BUN_VERSION } from './runtime-versions.ts';
 import { cdpHttpUrl, cdpPort } from './cdp-port.ts';
 import { DesignerController, withTabLock } from './designer-controller.ts';
@@ -728,7 +728,7 @@ function checkDeps(): DoctorCheck {
 
 async function checkAgentBrowser(): Promise<DoctorCheck> {
   return new Promise((resolve) => {
-    const c = xspawn('agent-browser', ['--version'], { stdio: 'pipe' });
+    const c = xspawn(resolveAgentBrowserBin(), ['--version'], { stdio: 'pipe' });
     let v = '';
     c.stdout!.on('data', (d: Buffer) => (v += d.toString()));
     c.on('error', () => resolve({ name: 'agent-browser installed', status: 'fail', detail: `binary not found; install exactly ${REQUIRED_AGENT_BROWSER_VERSION}` }));

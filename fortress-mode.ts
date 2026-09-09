@@ -4,12 +4,9 @@ import path from 'node:path';
 import { cdpPort } from './cdp-port.ts';
 import { nodeSpawnSync } from './cross-platform.ts';
 
-// Fortress mode drives tiliondev's stealth Chromium (github.com/tiliondev/fortress)
-// instead of local Chrome. It's the only headless option that clears Cloudflare
-// on claude.ai (a Windows persona with a corrected fingerprint, no HeadlessChrome
-// tell). Fortress ships only as a linux/amd64 Docker image, so on macOS/Windows
-// it runs under emulation; its container profile is ephemeral, so the login is
-// carried in by auto-reseed (see fortress-seed.ts) rather than a mounted volume.
+// Fortress (github.com/tiliondev/fortress) is a stealth Chromium that clears
+// Cloudflare headless. It ships only as a linux/amd64 Docker image with an
+// ephemeral profile, so the login is carried in by auto-reseed (fortress-seed.ts).
 
 export const FORTRESS_IMAGE = process.env.DESIGNER_FORTRESS_IMAGE || 'tilion/fortress:latest';
 export const FORTRESS_CONTAINER = process.env.DESIGNER_FORTRESS_CONTAINER || 'designer-fortress';
@@ -50,6 +47,8 @@ export function fortressDockerRunArgs({
     '--name',
     container,
     ...fortressPlatformArgs(arch),
+    // Docker's 64MB /dev/shm starves Chrome (ERR_INSUFFICIENT_RESOURCES -> blank page).
+    '--shm-size=2g',
     '-p',
     `127.0.0.1:${safePort}:9222`,
     image
