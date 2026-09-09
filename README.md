@@ -107,6 +107,37 @@ Dependency and browser versions above are intentionally exact. Review upstream
 release notes and update the pins in a dedicated PR; do not replace them with
 `latest`, caret, tilde, or wildcard ranges.
 
+### Fortress mode — stealth headless that clears Cloudflare
+
+Headless Chrome puts `HeadlessChrome` in the User-Agent, which Cloudflare
+challenges on claude.ai; native headless cannot get past it. `DESIGNER_BROWSER=fortress`
+drives [Fortress](https://github.com/tiliondev/fortress) — a stealth Chromium
+that presents a coherent Windows persona and clears the challenge headless.
+
+```bash
+export DESIGNER_BROWSER=fortress     # opt in (default: local Chrome)
+export CHROME_BIN="/absolute/path/to/Google Chrome for Testing"   # the signed-in source build
+designer doctor                      # or any command: auto-launches + seeds Fortress
+```
+
+Requirements and behaviour:
+
+- **Docker** (Fortress ships only as a `linux/amd64` image; on Apple Silicon it
+  runs under emulation). Auto-resolved from `PATH` or `~/.docker/bin`; override
+  with `DOCKER_BIN`.
+- **Log in once.** Fortress runs as an ephemeral container that cannot decrypt
+  the macOS profile, so designer carries the login in over loopback CDP: it reads
+  the session from your persistent `~/.chrome-designer-profile/` (via a transient
+  Chrome for Testing) and injects it. You sign in once; reseeds are automatic and
+  silent. `CHROME_BIN` must be the same build that signed in (it holds the key).
+- **Long-lived container.** The seed lasts the container's lifetime; a restart
+  reseeds automatically (~20s). An already-signed-in container is reused in ~5s.
+- Stop it with `designer fortress-stop` (or `docker rm -f designer-fortress`).
+- Overrides: `DESIGNER_FORTRESS_IMAGE`, `DESIGNER_FORTRESS_CONTAINER`.
+
+Fortress is only needed for **headless** stealth. For a visible window, plain
+Chrome for Testing already clears Cloudflare — Fortress adds nothing there.
+
 ## CLI
 
 ```

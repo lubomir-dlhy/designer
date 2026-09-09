@@ -15,6 +15,7 @@ import { REPO_ROOT } from './repo-root.ts';
 import { runHealth } from './ui-anchors.ts';
 import { PACKAGE_VERSION } from './package-meta.ts';
 import { decodeConsent } from './cli-flags.ts';
+import { resolveDockerBin, fortressDockerStopArgs, FORTRESS_CONTAINER } from './fortress-mode.ts';
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -267,6 +268,20 @@ async function main(): Promise<void> {
       await startMcpServer();
       break;
     }
+    case 'fortress-stop': {
+      const docker = resolveDockerBin();
+      if (!docker) {
+        console.error('Docker not found; nothing to stop. (Set DOCKER_BIN if it lives elsewhere.)');
+        process.exit(1);
+      }
+      const r = xspawnSync(docker, fortressDockerStopArgs(), { stdio: 'pipe' });
+      if (r.status === 0) {
+        console.log(`Stopped Fortress container (${FORTRESS_CONTAINER}).`);
+      } else {
+        console.log(`No running Fortress container (${FORTRESS_CONTAINER}).`);
+      }
+      break;
+    }
     case 'setup': {
       const code = await runSetup();
       process.exit(code);
@@ -440,6 +455,7 @@ Setup / ops:
 
 Internal:
   mcp serve                                    start MCP stdio server ('claude mcp add' uses this)
+  fortress-stop                                stop the DESIGNER_BROWSER=fortress container
 
 All verbs accept --key <k> for parallel isolation.
 Env: DESIGNER_CDP=9222 (auto-detected after 'designer setup').
@@ -574,6 +590,12 @@ Checks: agent-browser on PATH, CDP reachable at DESIGNER_CDP port, a /design tab
 selectors.json present, designer-loop skill installed at ~/.claude/skills/, MCP registration.
 
 Exits with code 2 if any check fails.`,
+
+  'fortress-stop': `designer fortress-stop — stop the Fortress container (DESIGNER_BROWSER=fortress).
+
+Force-removes the '${FORTRESS_CONTAINER}' container. The next designer call with
+DESIGNER_BROWSER=fortress relaunches it and reseeds the login automatically.
+No-op (and exits 0) when no such container is running.`,
 
   health: `designer health [--json] — probe every UI anchor this MCP depends on.
 
