@@ -9,6 +9,7 @@ import { getSelectors, presenceSelector } from './selectors.ts';
 import { jsLiteral } from './js-literal.ts';
 import { agentBrowserVersionSupported, REQUIRED_AGENT_BROWSER_VERSION, REQUIRED_BUN_VERSION } from './runtime-versions.ts';
 import { cdpHttpUrl, cdpPort } from './cdp-port.ts';
+import { designerHeadless, headlessChromeArgs } from './chrome-mode.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
@@ -17,6 +18,7 @@ const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
 const ALTERNATE_CHROME = isAlternateChromeBinary(process.env.CHROME_BIN);
 const DEFAULT_PORT = cdpPort(process.env.DESIGNER_CDP);
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
+const HEADLESS = designerHeadless();
 
 type Status = 'ok' | 'wait' | 'fail';
 
@@ -221,7 +223,7 @@ async function step3Chrome(port: string): Promise<boolean> {
   } else if (chromeRunning()) {
     log('chrome', 'ok', `Normal Chrome is running; using alternate browser ${CHROME_BIN} alongside it.`);
   }
-  log('chrome', 'wait', `Launching debug Chrome on :${port} with --user-data-dir=${PROFILE}`);
+  log('chrome', 'wait', `Launching ${HEADLESS ? 'headless ' : ''}debug Chrome on :${port} with --user-data-dir=${PROFILE}`);
   if (!fs.existsSync(CHROME_BIN)) {
     log('chrome', 'fail', `Chrome not found at ${CHROME_BIN}. Set CHROME_BIN to override.`);
     return false;
@@ -248,6 +250,7 @@ async function step3Chrome(port: string): Promise<boolean> {
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-search-engine-choice-screen',
+      ...headlessChromeArgs(HEADLESS),
       'https://claude.ai/design'
     ],
     {
@@ -389,10 +392,11 @@ export function mcpServerCommand(installedAvailable: boolean): string[] {
     : [process.execPath, path.join(REPO_ROOT, 'bin', 'designer.mjs'), 'mcp', 'serve'];
 }
 
-export function mcpRegistrationEnv(port: string, chromeBin: string | undefined): string[] {
+export function mcpRegistrationEnv(port: string, chromeBin: string | undefined, headless = false): string[] {
   const flags: string[] = [];
   if (port !== '9222') flags.push('-e', `DESIGNER_CDP=${port}`);
   if (chromeBin?.trim()) flags.push('-e', `CHROME_BIN=${chromeBin}`);
+  if (headless) flags.push('-e', 'DESIGNER_HEADLESS=1');
   return flags;
 }
 
@@ -403,15 +407,21 @@ export function mcpRegistrationCommand(envFlags: string[], serverCommand: string
   return ['mcp', 'add', '--scope', 'user', '--transport', 'stdio', 'designer', ...envFlags, '--', ...serverCommand];
 }
 
-export function mcpManagedEnvMatches(output: string, port: string, chromeBin: string | undefined): boolean {
+export function mcpManagedEnvMatches(output: string, port: string, chromeBin: string | undefined, headless = false): boolean {
   const expected = new Map<string, string>();
   if (port !== '9222') expected.set('DESIGNER_CDP', port);
   if (chromeBin?.trim()) expected.set('CHROME_BIN', chromeBin);
+  if (headless) expected.set('DESIGNER_HEADLESS', '1');
 
-  for (const key of ['DESIGNER_CDP', 'CHROME_BIN']) {
-    const line = output.split(/\r?\n/).find((candidate) => candidate.trimStart().startsWith(key));
+  const actual = new Map<string, string>();
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Z][A-Z0-9_]*)=(.*)$/);
+    if (match?.[1] && match[2] !== undefined) actual.set(match[1], match[2]);
+  }
+
+  for (const key of ['DESIGNER_CDP', 'CHROME_BIN', 'DESIGNER_HEADLESS']) {
     const value = expected.get(key);
-    if (value === undefined ? line !== undefined : !line?.includes(value)) return false;
+    if (value === undefined ? actual.has(key) : actual.get(key) !== value) return false;
   }
   return true;
 }
@@ -424,11 +434,11 @@ function step6Mcp(port: string): boolean {
   }
   const list = xspawnSync('claude', ['mcp', 'list'], { stdio: 'pipe' });
   const stdout = list.stdout?.toString() || '';
-  const envFlags = mcpRegistrationEnv(port, process.env.CHROME_BIN);
+  const envFlags = mcpRegistrationEnv(port, process.env.CHROME_BIN, HEADLESS);
   if (/(\s|^)designer\b/i.test(stdout)) {
     const get = xspawnSync('claude', ['mcp', 'get', 'designer'], { stdio: 'pipe' });
     const detail = `${get.stdout?.toString() || ''}\n${get.stderr?.toString() || ''}`;
-    if (get.status === 0 && mcpManagedEnvMatches(detail, port, process.env.CHROME_BIN)) {
+    if (get.status === 0 && mcpManagedEnvMatches(detail, port, process.env.CHROME_BIN, HEADLESS)) {
       log('mcp', 'ok', 'Already registered with the requested browser settings.');
       return true;
     }

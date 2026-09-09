@@ -46,6 +46,7 @@ export interface InterstitialReport {
    *  or a transient error that survived reloads), or null. Never token-banner —
    *  that's non-blocking. */
   blocked: InterstitialKind | null;
+  recovery?: 'visible-browser-launched';
 }
 
 export interface ClassifyOpts {

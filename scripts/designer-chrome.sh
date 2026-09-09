@@ -58,8 +58,14 @@ if pgrep "$PGREP_MODE" "$CHROME_PAT" >/dev/null; then
 fi
 
 echo "[designer-chrome] Launching: $CHROME --remote-debugging-port=$PORT --user-data-dir=$PROFILE"
-echo "[designer-chrome] Sign in to claude.ai in the new window. Then navigate to https://claude.ai/design."
-echo "[designer-chrome] When done, leave this window open. The CDP server runs as long as Chrome runs."
+HEADLESS_ARGS=()
+if [ "${DESIGNER_HEADLESS:-0}" = "1" ] || [ "${DESIGNER_HEADLESS:-}" = "true" ]; then
+  HEADLESS_ARGS=(--headless=new)
+  echo "[designer-chrome] Headless mode enabled; using the existing signed-in profile."
+else
+  echo "[designer-chrome] Sign in to claude.ai in the new window. Then navigate to https://claude.ai/design."
+  echo "[designer-chrome] When done, leave this window open. The CDP server runs as long as Chrome runs."
+fi
 
 exec "$CHROME" \
   --remote-debugging-port="$PORT" \
@@ -67,4 +73,5 @@ exec "$CHROME" \
   --no-first-run \
   --no-default-browser-check \
   --disable-search-engine-choice-screen \
+  "${HEADLESS_ARGS[@]}" \
   "https://claude.ai/design"

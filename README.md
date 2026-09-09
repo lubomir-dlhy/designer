@@ -60,7 +60,7 @@ Chrome, which `./bin/designer.mjs setup` launches.
 
 - **Dedicated profile.** Chrome 136+ blocks `--remote-debugging-port` on the default profile. Login to `~/.chrome-designer-profile/` persists.
 - **Auto-launch.** MCP auto-launches debug Chrome on the first tool call if the profile exists.
-- **Bot detection.** Real Chrome + user-controlled login — not headless. Cloudflare + Google OAuth see a normal session. First login may trigger a Google new-device prompt.
+- **Bot detection.** Visible Chrome is the default for first login and Cloudflare recovery. After login, set `DESIGNER_HEADLESS=1` to reuse the dedicated profile without a visible window; if authentication or Cloudflare blocks it, temporarily relaunch without that variable.
 - **`DESIGNER_CDP=9222`** is the default. Export it only when using a different port or when you want the setting explicit for direct CLI calls.
 
 ### Run normal Chrome and Designer together
@@ -82,6 +82,20 @@ export DESIGNER_CDP=9333
 ./bin/designer.mjs setup
 ```
 
+After completing the visible login once, switch the dedicated testing browser
+to fully background operation:
+
+```bash
+export DESIGNER_HEADLESS=1
+./bin/designer.mjs setup
+```
+
+Setup persists `DESIGNER_HEADLESS=1` in the MCP registration. MCP launches
+Chrome with `--headless=new` against the signed-in profile. If Cloudflare blocks
+the page, Designer restarts only Chrome for Testing visibly on that URL and asks
+you to complete verification before retrying. Quit that testing browser later;
+the next MCP call restores the configured headless mode.
+
 Setup stores both variables in the Claude Code MCP registration. Thereafter the
 MCP can auto-launch Chrome for Testing on port 9333 even while normal Chrome is
 running. The testing browser still uses `~/.chrome-designer-profile/`, so its
@@ -96,7 +110,7 @@ release notes and update the pins in a dedicated PR; do not replace them with
 ```
 designer setup                                       (once per machine)
 designer session --action create --name "X" --key x  start a project
-designer adopt --key x                                adopt an open /design/p/<uuid> tab into a key
+designer adopt --key x [--url https://claude.ai/design/p/<uuid>]  adopt an open project tab into a key
 designer prompt "design the …" --key x               prints 'Taste here: <url>'
 designer prompt - --key x < follow-up.txt            iterate
 designer handoff --key x                             bundle for code implementation
@@ -108,7 +122,14 @@ designer handoff --key x                             bundle for code implementat
 > filling the composer and clicking "Start project". `designer adopt` also binds
 > an already-open `/design/p/<uuid>` tab to a key if you'd rather create by hand.
 
-Every verb has `--help`. `--key <k>` isolates parallel sessions (state at `~/.designer/sessions.json`). Prompts accept positional, `--prompt-file`, or stdin (`-`).
+When more than one project tab is open, `adopt` first reuses a unique prior key
+binding. If there is no unique match, pass the target project's exact
+`https://claude.ai/design/p/<uuid>` URL with `--url`; Designer never closes the
+other tabs or chooses by whichever tab happens to be active.
+
+Every verb has `--help`. `--key <k>` isolates parallel sessions (state at `~/.designer/sessions.json`). In CDP mode each key is pinned to its own Chrome tab, so two agents can update two open design projects concurrently without navigating or closing each other's tab. Prompts accept positional, `--prompt-file`, or stdin (`-`).
+
+Once a key is bound, normal prompts, snapshots, file operations, and handoffs control its pinned tab without activating Chrome, so they can run in the background. Creating a new project, adopting an unbound tab, or recovering a missing/closed tab may bring Chrome forward once while the new target is bound.
 
 ## MCP
 

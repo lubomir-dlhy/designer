@@ -4,12 +4,14 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { defaultChromeBin, isAlternateChromeBinary, isChromeRunning, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { isCdpEnabled } from './cdp-env.ts';
-import { cdpHttpUrl, cdpPort } from './cdp-port.ts';
+import { assertLoopbackWebSocketUrl, cdpHttpUrl, cdpPort } from './cdp-port.ts';
+import { designerHeadless, headlessChromeArgs } from './chrome-mode.ts';
 
 const PORT = cdpPort(process.env.DESIGNER_CDP);
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
 const ALTERNATE_CHROME = isAlternateChromeBinary(process.env.CHROME_BIN);
+const HEADLESS = designerHeadless();
 
 async function isCdpUp(): Promise<boolean> {
   try {
@@ -20,8 +22,84 @@ async function isCdpUp(): Promise<boolean> {
   }
 }
 
+interface CdpVersion {
+  'User-Agent'?: string;
+  webSocketDebuggerUrl?: string;
+}
+
+export function isHeadlessBrowser(version: CdpVersion): boolean {
+  return /HeadlessChrome/i.test(version['User-Agent'] ?? '');
+}
+
+export function isClaudeDesignUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.origin === 'https://claude.ai' && /^\/design(?:\/|$)/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function launchChrome(headless: boolean, url = 'https://claude.ai/design'): void {
+  const child = spawn(
+    CHROME_BIN,
+    [
+      '--remote-debugging-port=' + PORT,
+      '--user-data-dir=' + PROFILE,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-search-engine-choice-screen',
+      ...headlessChromeArgs(headless),
+      url
+    ],
+    { detached: true, stdio: 'ignore' }
+  );
+  child.unref();
+}
+
+async function waitForCdp(up: boolean, attempts = 40): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if ((await isCdpUp()) === up) return true;
+    await sleep(500);
+  }
+  return false;
+}
+
+async function closeBrowser(webSocketUrl: string): Promise<void> {
+  const socket = new WebSocket(assertLoopbackWebSocketUrl(webSocketUrl));
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      error ? reject(error) : resolve();
+    };
+    const timer = setTimeout(() => finish(new Error('Timed out closing headless Chrome')), 5000);
+    socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.close' })));
+    socket.addEventListener('message', () => finish(), { once: true });
+    socket.addEventListener('close', () => finish(), { once: true });
+    socket.addEventListener('error', () => finish(new Error('Could not close headless Chrome')), { once: true });
+  });
+}
+
+export async function relaunchVisibleForVerification(url: string): Promise<boolean> {
+  if (!isClaudeDesignUrl(url)) return false;
+
+  const response = await fetch(cdpHttpUrl(PORT, '/json/version'), { signal: AbortSignal.timeout(1500) });
+  if (!response.ok) return false;
+  const version = (await response.json()) as CdpVersion;
+  if (!HEADLESS || !isHeadlessBrowser(version) || !version.webSocketDebuggerUrl) return false;
+
+  await closeBrowser(version.webSocketDebuggerUrl);
+  if (!(await waitForCdp(false, 20))) throw new Error('Headless Chrome did not stop');
+  launchChrome(false, url);
+  if (!(await waitForCdp(true))) throw new Error('Visible Chrome did not start');
+  return true;
 }
 
 // Make sure a debug Chrome is listening on CDP before the first tool call.
@@ -58,18 +136,9 @@ export async function ensureCdpUp(): Promise<void> {
     );
   }
 
-  const child = spawn(
-    CHROME_BIN,
-    ['--remote-debugging-port=' + PORT, '--user-data-dir=' + PROFILE, 'https://claude.ai/design'],
-    { detached: true, stdio: 'ignore' }
-  );
-  child.unref();
-
-  for (let i = 0; i < 40; i++) {
-    await sleep(500);
-    if (await isCdpUp()) return;
-  }
+  launchChrome(HEADLESS);
+  if (await waitForCdp(true)) return;
   throw new Error(
-    `Auto-launched Chrome but CDP didn't come up on :${PORT} within 20s. Check that the launched window survived, or run designer setup.`
+    `Auto-launched ${HEADLESS ? 'headless ' : ''}Chrome but CDP didn't come up on :${PORT} within 20s. Check the browser process, or run designer setup.`
   );
 }

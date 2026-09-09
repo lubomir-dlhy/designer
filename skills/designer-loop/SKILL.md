@@ -52,6 +52,9 @@ Aesthetic questions belong to Claude Design, not you: do not ask about palette, 
 Orient in the claude.ai/design surface:
 
 1. `designer_session({ key })` — returns stored state + `availableFiles`. If `stored.designUrl` exists, you're resuming; otherwise create one with a sensible default name derived from the intent (don't interview for a project name).
+   The key is also the Chrome-tab binding: use one stable, distinct key per design project (for example `finance-app` and `arena-ui`). Never reuse one key for two simultaneously active projects.
+   If `adopt` sees multiple projects, keep every tab open. It uses a unique prior key match or the exact project `url`, never tab order.
+   If Cloudflare blocks headless Chrome, Designer opens Chrome for Testing visibly. Ask the human to verify, then retry.
 2. For existing projects: `designer_snapshot({ filename })` per file of interest. You get `htmlPath` — read it only if deep inspection is warranted.
 3. **Survey capabilities — this is the primary source of design, not an afterthought.** Before relaying any intent, read the target repo for what the system actually DOES: entities and their fields, operations / endpoints, states (loading / empty / error / success), failure modes, hard constraints (auth, rate limits, offline cases), and existing design tokens. The design EXPRESSES these capabilities — the human's feeling-shaped intent only tells you *how*; the codebase tells you *what*. Transfer capability facts into the prompt verbatim; don't filter them down to what you think matters aesthetically. If there's no codebase yet (greenfield intake), say so in the prompt so Claude Design doesn't invent constraints.
 

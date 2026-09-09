@@ -5,9 +5,11 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { jsLiteral } from './js-literal.ts';
-import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
+import { upsertSession, appendHistory, getSession, listSessions, type StoredSession } from './session-store.ts';
+import { projectRoot, resolveAdoptCandidate, SESSION_URL_RE } from './adopt-resolver.ts';
+export { SESSION_URL_RE } from './adopt-resolver.ts';
 import { getSelectors, orderedBranches, presenceSelector, type Selectors } from './selectors.ts';
-import { ensureCdpUp } from './cdp-ensure.ts';
+import { ensureCdpUp, relaunchVisibleForVerification } from './cdp-ensure.ts';
 import { RunStateObserver } from './run-state.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
@@ -225,11 +227,6 @@ export interface RepairReport {
 
 const DESIGN_HOME = 'https://claude.ai/design';
 
-// A claude.ai/design session URL: /design/p/<uuid>. Capture group 1 is the
-// project id. Used by isInSession()-style checks and `adopt` (binding an
-// already-open project tab to a key, bypassing the create-flow home).
-export const SESSION_URL_RE = /^https:\/\/claude\.ai\/design\/p\/([a-f0-9-]+)/i;
-
 // Appended to every designer_prompt payload. The live MCP surface
 // (listFiles / openFile / newFiles diff) scrapes a flat root from the
 // file panel; files nested under folders stay invisible until handoff.
@@ -240,45 +237,9 @@ const FLAT_LAYOUT_SUFFIX = '\n\nFile layout: keep all generated files at the pro
 const DECISIVE_SUFFIX =
   '\n\nIf you would otherwise stop to ask clarifying questions, do not. Choose the most defensible answer for each axis yourself and proceed. Note your assumption in a one-line `<!-- assumed: ... -->` comment at the top of the relevant file so I can override on the next turn.';
 
-/**
- * In-process exclusion for every operation that navigates or otherwise mutates
- * a design tab.
- *
- * THE RESOURCE IS THE SESSION'S ACTIVE TAB, so the lock is keyed by
- * `browser.driverId` — the agent-browser session that owns it. Two earlier
- * shapes were both wrong:
- *  - per controller INSTANCE (#134 F3): in CDP mode agent-browser scopes its
- *    daemon session by ENDPOINT (`designer-cdp-<port>`), so every key shares one
- *    session and the lock serialized nothing.
- *  - per (session + project root): `openGuarded` calls `browser.open()` on
- *    whichever tab is ACTIVE — it does not select a tab first — and
- *    `selectDesignTab` changes which tab that is. A navigation issued for
- *    project B therefore moves the tab project A is mid-flight on, so scoping by
- *    project let exactly the interleaving this exists to prevent through.
- *
- * Parallel `--key` work is genuinely serialized by this, and that is correct
- * rather than a regression: with one active tab per session those operations
- * were never safe concurrently, they merely failed silently instead of loudly.
- *
- * Re-entrant per OPERATION via AsyncLocalStorage, not per instance: deleteFile
- * legitimately calls fetchFile -> openFile, which must not deadlock, while two
- * genuinely concurrent calls — even on the same controller — still exclude each
- * other because they run in different async contexts.
- *
- * Remaining gap, documented not closed: in-process only. Two designer PROCESSES
- * against one Chrome is the cross-latch gap CLAUDE.md documents; that needs a
- * lockfile.
- */
+/** Serializes tab mutations per pinned driver. */
 const DRIVER_LOCKS = new Map<string, string>();
 
-/**
- * Acquire the tab lock, or report who holds it. Extracted so the acquire/release
- * decision is unit-testable rather than only reachable through a live browser —
- * the same standard applied to decodeConsent in this series.
- *
- * Synchronous by construction: check and set happen in one tick, so two async
- * callers cannot both observe the lock free.
- */
 export function tryAcquireDriverLock(locks: Map<string, string>, driver: string, label: string): string | null {
   const held = locks.get(driver);
   if (held) return held;
@@ -287,25 +248,7 @@ export function tryAcquireDriverLock(locks: Map<string, string>, driver: string,
   return null;
 }
 
-/**
- * Monotonic count of tab-driving operations started, PER DRIVER.
- *
- * Lock-free readers use it to detect that something drove *their* tab during a
- * read. URL equality alone cannot: the tab can go A→B→A between two samples and
- * compare equal while the reads either side came from different projects. Any
- * in-process navigation goes through the lock, so a changed epoch is a reliable
- * "your read may be mixed" signal.
- *
- * Keyed by driverId, not global. Under DESIGNER_CDP='' each key gets its own
- * agent-browser session and therefore its own tab, so a process-wide counter
- * made key B's activity invalidate key A's status read of a tab B could not
- * touch — defeating the parallel isolation that mode exists to provide. The
- * epoch must be as narrow as the resource it stands for, which is the same
- * lesson the lock itself took three attempts to learn.
- *
- * Out-of-process actors do not bump it — the documented cross-process gap,
- * where URL equality remains the belt.
- */
+/** Detects ABA races in lock-free reads. */
 const DRIVER_EPOCHS = new Map<string, number>();
 export const driverEpoch = (driver: string): number => DRIVER_EPOCHS.get(driver) ?? 0;
 
@@ -493,10 +436,12 @@ export class DesignerController {
   private async _sessionBody({
     action = 'status',
     name,
+    url,
     fidelity = 'wireframe'
   }: {
     action?: 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt' | 'clear';
     name?: string;
+    url?: string;
     fidelity?: 'wireframe' | 'highfi';
   } = {}): Promise<unknown> {
     if (action === 'status') return this.getStatus();
@@ -535,7 +480,7 @@ export class DesignerController {
       return { ...r, status: await this.getStatus() };
     }
     if (action === 'adopt') {
-      const r = await this.adoptSession(name);
+      const r = await this.adoptSession(name, url);
       return { ...r, status: await this.getStatus() };
     }
     throw new Error(`Unknown action: ${action}`);
@@ -545,27 +490,29 @@ export class DesignerController {
   // key — the supported path around the redesigned creation-cards home, whose
   // anchors drift wholesale (issue #61). `name` is optional metadata only.
   //
-  // Safety (PR #66 review): adopt must never silently bind the WRONG project.
-  // With more than one /design/p/<uuid> tab open (normal during parallel --key
-  // work), there's no key↔tab correlation to pick the right one, so refuse and
-  // list them rather than guess by active-first. We also bind from the VALIDATED
-  // candidate URL, not a currentUrl() re-read after activateTab (which could race
-  // to a different tab).
-  private async _adoptSessionBody(name?: string): Promise<{ ok: true; url: string; uuid: string; adopted: true; name?: string }> {
+  // Resolve multiple tabs only from persisted state or an explicit URL.
+  private async _adoptSessionBody(name?: string, requestedUrl?: string): Promise<{ ok: true; url: string; uuid: string; adopted: true; name?: string }> {
     await ensureCdpUp();
 
     const candidates = await this.candidateTabs((u) => SESSION_URL_RE.test(u));
-    if (candidates.length > 1) {
+    const resolved = resolveAdoptCandidate(candidates, this.key, requestedUrl, listSessions());
+    if (requestedUrl && !projectRoot(requestedUrl)) {
+      throw new Error(`adopt --url must be a https://claude.ai/design/p/<uuid> URL; got ${requestedUrl}`);
+    }
+    if (requestedUrl && !resolved) {
+      throw new Error(`The requested project tab is not open: ${projectRoot(requestedUrl)}`);
+    }
+    if (candidates.length > 1 && !resolved) {
       const list = candidates.map((t) => `  - ${t.url}`).join('\n');
       throw new Error(
         `adopt can't choose among ${candidates.length} open /design/p/<uuid> tabs:\n${list}\n` +
-          `Leave only the target project open (close the others), then retry — adopt won't guess which one this key (${this.key}) means.`
+          `Pass the target project's exact URL as url/--url; adopt won't guess which one this key (${this.key}) means.`
       );
     }
 
     // Use the validated candidate URL; fall back to the already-bound tab when no
     // dedicated session tab is open (agent-browser may already be on a /p/ URL).
-    const top = candidates[0];
+    const top = resolved ?? candidates[0];
     const url = top?.url || (await this.currentUrl());
     const m = url.match(SESSION_URL_RE);
     if (!m) {
@@ -573,10 +520,8 @@ export class DesignerController {
         `No /design/p/<uuid> tab to adopt — open a project by hand in the CDP-attached Chrome first. current url=${url || 'none'}`
       );
     }
-    // Bind agent-browser to the adopted tab for subsequent prompt/handoff. If
-    // activation races or fails, the stored designUrl (from the validated URL
-    // above) is still correct — ensureReady re-binds by it later.
-    if (top) await this.browser.activateTab(top.index).catch(() => null);
+    // Avoid redundant activation because CDP activation can focus Chrome.
+    if (top && !top.active) await this.browser.activateTab(top.targetId || top.index).catch(() => null);
 
     const designUrl = url.split('?')[0] || url;
     const uuid = m[1] ?? '';
@@ -613,7 +558,7 @@ export class DesignerController {
     if (candidates.length === 0) return { matched: false, candidates: 0 };
 
     for (const cand of candidates) {
-      await this.browser.activateTab(cand.index).catch(() => null);
+      if (!cand.active) await this.browser.activateTab(cand.targetId || cand.index).catch(() => null);
       const composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
       const homeOk = this._signedInMarker()
         ? await this.browser.isVisible(this._signedInMarker()).catch(() => false)
@@ -724,7 +669,14 @@ export class DesignerController {
           handled.push(kind);
           continue;
         }
-        return { ok: false, handled, blocked: kind };
+        const url = await this.currentUrl();
+        const relaunched = await relaunchVisibleForVerification(url).catch(() => false);
+        return {
+          ok: false,
+          handled,
+          blocked: kind,
+          ...(relaunched ? { recovery: 'visible-browser-launched' as const } : {})
+        };
       }
 
       // Exhaustiveness: a new InterstitialAction must be handled above, not fall
@@ -753,9 +705,12 @@ export class DesignerController {
     return false;
   }
 
-  private _interstitialError(kind: InterstitialKind, candidates: number): Error {
+  private _interstitialError(kind: InterstitialKind, candidates: number, recovery?: InterstitialReport['recovery']): Error {
     const suffix = candidates > 0 ? ` (checked ${candidates} tab(s))` : '';
     if (kind === 'cloudflare') {
+      if (recovery === 'visible-browser-launched') {
+        return new Error('Cloudflare verification opened in visible Chrome for Testing. Complete it, then retry.');
+      }
       return new Error(
         `Cloudflare bot-check is up on claude.ai/design and didn't clear${suffix}. ` +
           `Solve it in the CDP-attached Chrome, then retry.`
@@ -772,7 +727,7 @@ export class DesignerController {
       // The token banner leaves the composer visible, so a tab can match with an
       // interstitial still up — clear it before any verb runs against the page.
       const interstitials = await this.clearInterstitials();
-      if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates);
+      if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates, interstitials.recovery);
       return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession(), interstitials };
     }
 
@@ -792,9 +747,9 @@ export class DesignerController {
     );
     const recoveryTab = designTabs[0];
     if (recoveryTab) {
-      await this.browser.activateTab(recoveryTab.index).catch(() => null);
+      if (!recoveryTab.active) await this.browser.activateTab(recoveryTab.targetId || recoveryTab.index).catch(() => null);
       const report = await this.clearInterstitials();
-      if (report.blocked) throw this._interstitialError(report.blocked, designTabs.length);
+      if (report.blocked) throw this._interstitialError(report.blocked, designTabs.length, report.recovery);
       if (report.handled.length > 0) {
         const retry = await this.selectMatchingTab();
         if (retry.matched) {
@@ -813,7 +768,7 @@ export class DesignerController {
     }
 
     const interstitials = await this.clearInterstitials();
-    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates);
+    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates, interstitials.recovery);
 
     const homeOk = this._signedInMarker()
       ? await this.browser.isVisible(this._signedInMarker()).catch(() => false)
@@ -851,13 +806,13 @@ export class DesignerController {
     // name leaves the send button disabled and would otherwise spin the full
     // navigation poll before failing with a misleading message.
     if (!name?.trim()) throw new Error('create requires a non-empty name (used as the project seed prompt).');
-    await this.openGuarded(DESIGN_HOME);
+    await this.browser.newTab(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
     // createSession opens home directly (not via ensureReady), so run the same
     // interstitial pre-flight — a Cloudflare check or transient error on home
     // would otherwise stall waitFor(creator) with a misleading timeout.
     const interstitials = await this.clearInterstitials();
-    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, 0);
+    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, 0, interstitials.recovery);
     await this.browser.waitFor(this.selectors.home.creator);
 
     const fidelityHint =
@@ -923,9 +878,17 @@ export class DesignerController {
   private async _resumeSessionBody(): Promise<{ ok: true; url: string }> {
     const stored = getSession(this.key);
     if (!stored?.designUrl) throw new Error(`No designUrl stored for key=${this.key}. Create one first.`);
-    await this.openGuarded(stored.designUrl);
+
+    const targetRoot = stored.designUrl.split('?')[0];
+    const candidates = await this.candidateTabs((u) => u.split('?')[0] === targetRoot);
+    const existing = candidates[0];
+    if (existing) {
+      if (!existing.active) await this.browser.activateTab(existing.targetId || existing.index);
+    } else {
+      await this.browser.newTab(stored.designUrl);
+    }
     await this.browser.waitLoad('networkidle').catch(() => null);
-    return { ok: true, url: stored.designUrl };
+    return { ok: true, url: (await this.currentUrl()) || stored.designUrl };
   }
 
   // Fill the composer and click send. Defaults to the in-session composer
@@ -1291,16 +1254,16 @@ export class DesignerController {
 
   async _ensureInSession(): Promise<void> {
     await this.ensureReady();
-    if (await this.isInSession()) return;
     const stored = getSession(this.key);
     if (!stored?.designUrl) throw new Error(`No active session for key=${this.key}. Call createSession first.`);
+    if ((await this.currentUrl()).split('?')[0] === stored.designUrl.split('?')[0]) return;
     await this.resumeSession();
     // ensureReady's pre-flight cleared the home/current page, but this cold-start
     // just navigated to the stored project — an interstitial on the PROJECT page
     // itself (token banner, transient error, Cloudflare) would otherwise reach the
     // verb that called us. Clear again on the resumed page (PR #77 Codex P2).
     const interstitials = await this.clearInterstitials();
-    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, 1);
+    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, 1, interstitials.recovery);
   }
 
   async iterate(
