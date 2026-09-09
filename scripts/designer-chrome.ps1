@@ -51,6 +51,13 @@ $StealthArgs = @('--disable-blink-features=AutomationControlled')
 if ($env:DESIGNER_STEALTH -eq '0' -or $env:DESIGNER_STEALTH -eq 'false') {
   $StealthArgs = @()
 }
+# Default window size (design canvas is 1440 wide). DESIGNER_WINDOW_SIZE=WxH or =0.
+$WindowArgs = @('--window-size=1920,1080')
+if ($env:DESIGNER_WINDOW_SIZE -eq '0' -or $env:DESIGNER_WINDOW_SIZE -eq 'off') {
+  $WindowArgs = @()
+} elseif ($env:DESIGNER_WINDOW_SIZE) {
+  $WindowArgs = @("--window-size=$($env:DESIGNER_WINDOW_SIZE -replace 'x',',')")
+}
 $HeadlessArgs = @()
 if ($env:DESIGNER_HEADLESS -eq '1' -or $env:DESIGNER_HEADLESS -eq 'true') {
   $HeadlessArgs = @('--headless=new')
@@ -67,5 +74,6 @@ if ($env:DESIGNER_HEADLESS -eq '1' -or $env:DESIGNER_HEADLESS -eq 'true') {
   "--no-default-browser-check" `
   "--disable-search-engine-choice-screen" `
   $StealthArgs `
+  $WindowArgs `
   $HeadlessArgs `
   "https://claude.ai/design"

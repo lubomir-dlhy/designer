@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { resolveChromeBin, isAlternateChromeBinary, isChromeRunning, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { isCdpEnabled } from './cdp-env.ts';
 import { assertLoopbackWebSocketUrl, cdpHttpUrl, cdpPort } from './cdp-port.ts';
-import { designerHeadless, headlessChromeArgs } from './chrome-mode.ts';
+import { designerHeadless, headlessChromeArgs, windowSizeArgs } from './chrome-mode.ts';
 import { stealthChromeArgs } from './stealth-mode.ts';
 import { fortressDockerRunArgs, fortressEnabled, resolveDockerBin, FORTRESS_CONTAINER } from './fortress-mode.ts';
 import { checkClaudeAuth, seedClaudeSession } from './fortress-seed.ts';
@@ -57,6 +57,7 @@ function launchChrome(headless: boolean, url = 'https://claude.ai/design'): void
       '--no-default-browser-check',
       '--disable-search-engine-choice-screen',
       ...stealthChromeArgs(),
+      ...windowSizeArgs(),
       ...headlessChromeArgs(headless),
       url
     ],
