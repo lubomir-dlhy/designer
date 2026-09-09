@@ -64,6 +64,9 @@ STEALTH_ARGS=(--disable-blink-features=AutomationControlled)
 if [ "${DESIGNER_STEALTH:-1}" = "0" ] || [ "${DESIGNER_STEALTH:-}" = "false" ]; then
   STEALTH_ARGS=()
 fi
+# Default window size (design canvas is 1440 wide). DESIGNER_WINDOW_SIZE=WxH or =0.
+WINDOW_ARGS=("--window-size=${DESIGNER_WINDOW_SIZE:-1920,1080}")
+case "${DESIGNER_WINDOW_SIZE:-}" in 0|off) WINDOW_ARGS=() ;; *x*) WINDOW_ARGS=("--window-size=${DESIGNER_WINDOW_SIZE/x/,}") ;; esac
 HEADLESS_ARGS=()
 if [ "${DESIGNER_HEADLESS:-0}" = "1" ] || [ "${DESIGNER_HEADLESS:-}" = "true" ]; then
   HEADLESS_ARGS=(--headless=new)
@@ -80,5 +83,6 @@ exec "$CHROME" \
   --no-default-browser-check \
   --disable-search-engine-choice-screen \
   "${STEALTH_ARGS[@]}" \
+  "${WINDOW_ARGS[@]}" \
   "${HEADLESS_ARGS[@]}" \
   "https://claude.ai/design"

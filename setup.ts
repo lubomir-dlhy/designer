@@ -9,7 +9,7 @@ import { getSelectors, presenceSelector } from './selectors.ts';
 import { jsLiteral } from './js-literal.ts';
 import { agentBrowserVersionSupported, REQUIRED_AGENT_BROWSER_VERSION, REQUIRED_BUN_VERSION } from './runtime-versions.ts';
 import { cdpHttpUrl, cdpPort } from './cdp-port.ts';
-import { designerHeadless, headlessChromeArgs } from './chrome-mode.ts';
+import { designerHeadless, headlessChromeArgs, windowSizeArgs } from './chrome-mode.ts';
 import { stealthChromeArgs } from './stealth-mode.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
@@ -252,6 +252,7 @@ async function step3Chrome(port: string): Promise<boolean> {
       '--no-default-browser-check',
       '--disable-search-engine-choice-screen',
       ...stealthChromeArgs(),
+      ...windowSizeArgs(),
       ...headlessChromeArgs(HEADLESS),
       'https://claude.ai/design'
     ],

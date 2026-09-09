@@ -18,7 +18,10 @@ test('docker run args publish the CDP port to loopback and run detached', () => 
   assert.deepEqual(args.slice(0, 5), ['run', '-d', '--rm', '--name', 'designer-fortress']);
   assert.ok(args.includes('127.0.0.1:9222:9222'));
   assert.ok(args.includes('--platform') && args.includes('linux/amd64'));
-  assert.equal(args[args.length - 1], 'tilion/fortress:latest');
+  assert.ok(args.includes('--shm-size=2g'));
+  // image, then chrome args passed through the entrypoint
+  const img = args.indexOf('tilion/fortress:latest');
+  assert.ok(img >= 0 && args.slice(img + 1).some((a) => a.startsWith('--window-size=')));
 });
 
 test('docker run args reject an invalid port', () => {

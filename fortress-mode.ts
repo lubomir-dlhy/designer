@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { cdpPort } from './cdp-port.ts';
+import { windowSizeArgs } from './chrome-mode.ts';
 import { nodeSpawnSync } from './cross-platform.ts';
 
 // Fortress (github.com/tiliondev/fortress) is a stealth Chromium that clears
@@ -51,7 +52,9 @@ export function fortressDockerRunArgs({
     '--shm-size=2g',
     '-p',
     `127.0.0.1:${safePort}:9222`,
-    image
+    image,
+    // Chrome args after the image reach chrome via the entrypoint's "$@".
+    ...windowSizeArgs()
   ];
 }
 

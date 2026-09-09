@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { designerHeadless, headlessChromeArgs } from '../chrome-mode.ts';
+import { designerHeadless, headlessChromeArgs, windowSizeArgs } from '../chrome-mode.ts';
 import { isClaudeDesignUrl, isHeadlessBrowser } from '../cdp-ensure.ts';
 
 test('headless mode requires an explicit accepted boolean', () => {
@@ -12,6 +12,16 @@ test('headless mode requires an explicit accepted boolean', () => {
 test('headless launch flags are deterministic', () => {
   assert.deepEqual(headlessChromeArgs(false), []);
   assert.deepEqual(headlessChromeArgs(true), ['--headless=new']);
+});
+
+test('window size defaults to 1920x1080 and accepts overrides', () => {
+  assert.deepEqual(windowSizeArgs(undefined), ['--window-size=1920,1080']);
+  assert.deepEqual(windowSizeArgs(''), ['--window-size=1920,1080']);
+  assert.deepEqual(windowSizeArgs('1600x1000'), ['--window-size=1600,1000']);
+  assert.deepEqual(windowSizeArgs('1440,900'), ['--window-size=1440,900']);
+  assert.deepEqual(windowSizeArgs('0'), []);
+  assert.deepEqual(windowSizeArgs('off'), []);
+  assert.throws(() => windowSizeArgs('huge'), /Invalid DESIGNER_WINDOW_SIZE/);
 });
 
 test('verification recovery only accepts Claude Design URLs', () => {
