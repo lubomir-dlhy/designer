@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.28](https://github.com/lubomir-dlhy/designer/compare/v0.3.27...v0.3.28) (2026-09-09)
+
+
+### Features
+
+* **browser:** default to a 1920x1080 window ([#16](https://github.com/lubomir-dlhy/designer/issues/16)) ([9746a4d](https://github.com/lubomir-dlhy/designer/commit/9746a4d206eed1732ca8e2a56641aede412b03f4))
+
+
+### Bug Fixes
+
+* **fortress:** close reseed tabs to avoid orphan design tabs ([#13](https://github.com/lubomir-dlhy/designer/issues/13)) ([921c9a0](https://github.com/lubomir-dlhy/designer/commit/921c9a0ad0abc8c729a63597b350e13f19811a10))
+* robust MCP launch (any shell) + Fortress render + consistent CfT ([#15](https://github.com/lubomir-dlhy/designer/issues/15)) ([759bcf9](https://github.com/lubomir-dlhy/designer/commit/759bcf92b17d8bf39d031d8e7d00c076d370494b))
+
 ## [0.3.27](https://github.com/lubomir-dlhy/designer/compare/v0.3.26...v0.3.27) (2026-09-01)
 
 
