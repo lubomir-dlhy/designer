@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { defaultChromeBin, isAlternateChromeBinary, isChromeRunning, QUIT_CHROME_HINT } from './cross-platform.ts';
+import { resolveChromeBin, isAlternateChromeBinary, isChromeRunning, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { isCdpEnabled } from './cdp-env.ts';
 import { assertLoopbackWebSocketUrl, cdpHttpUrl, cdpPort } from './cdp-port.ts';
 import { designerHeadless, headlessChromeArgs } from './chrome-mode.ts';
@@ -12,8 +12,8 @@ import { checkClaudeAuth, seedClaudeSession } from './fortress-seed.ts';
 
 const PORT = cdpPort(process.env.DESIGNER_CDP);
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
-const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
-const ALTERNATE_CHROME = isAlternateChromeBinary(process.env.CHROME_BIN);
+const CHROME_BIN = resolveChromeBin();
+const ALTERNATE_CHROME = isAlternateChromeBinary(CHROME_BIN);
 const HEADLESS = designerHeadless();
 
 async function isCdpUp(): Promise<boolean> {
@@ -113,14 +113,6 @@ export async function relaunchVisibleForVerification(url: string): Promise<boole
 //   3. No non-debug Chrome is running, unless CHROME_BIN selects a genuinely
 //      different executable such as Chrome for Testing or Canary.
 // Otherwise: return an actionable error the caller can surface to the user.
-// Fortress mode: drive the stealth Chromium container. It's the only headless
-// browser that clears Cloudflare on claude.ai, but its container profile can't
-// decrypt the macOS login, so we carry the session in once per container:
-//   1. launch (if the CDP endpoint isn't already up),
-//   2. if already signed in (kept from an earlier seed) -> done,
-//   3. else read the login from the persistent source profile via a transient
-//      Chrome for Testing and inject it (fortress-seed.ts), over loopback.
-// You log in once (the source profile persists it); reseeds are automatic.
 async function isCdpUpOn(port: string): Promise<boolean> {
   try {
     const res = await fetch(cdpHttpUrl(port, '/json/version'), { signal: AbortSignal.timeout(1500) });

@@ -1,10 +1,6 @@
-// Auto-reseed for Fortress mode. Fortress runs as an ephemeral linux/amd64
-// container that cannot decrypt the macOS profile, so the claude.ai session is
-// carried in over loopback CDP: a source browser that CAN decrypt the profile
-// (Chrome for Testing) hands over the *decrypted* cookie values, which Fortress
-// re-encrypts with its own key. Nothing is written to disk; the plaintext values
-// live only in memory for the duration of the move. You log in once (the source
-// profile persists it); designer reseeds Fortress automatically after that.
+// Auto-reseed for Fortress: the container can't decrypt the macOS profile, so a
+// source browser that can (Chrome for Testing) hands its decrypted claude.ai
+// cookies to Fortress over loopback CDP. Nothing is written to disk.
 import { cdpHttpUrl, cdpPort } from './cdp-port.ts';
 
 interface Cookie {
