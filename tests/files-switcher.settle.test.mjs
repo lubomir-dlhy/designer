@@ -162,7 +162,7 @@ test('the session reset considers the STORED url, not only the live tab', () => 
 test('createSession stores a URL that can carry ?file=, which is why the above matters', () => {
   const src = readFileSync(join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
   assert.match(src, /upsertSession\(this\.key, \{ designUrl: url, name, fidelity/, 'designUrl is the raw current URL');
-  assert.match(src, /await this\.openGuarded\(stored\.designUrl\)/, 'resumeSession opens it verbatim');
+  assert.match(src, /await this\.browser\.newTab\(stored\.designUrl\)/, 'resumeSession reopens the stored URL verbatim when its tab is absent');
 });
 
 test('the lock-free status scrape is re-attributed, not trusted', () => {

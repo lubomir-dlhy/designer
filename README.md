@@ -60,7 +60,9 @@ Chrome, which `./bin/designer.mjs setup` launches.
 
 - **Dedicated profile.** Chrome 136+ blocks `--remote-debugging-port` on the default profile. Login to `~/.chrome-designer-profile/` persists.
 - **Auto-launch.** MCP auto-launches debug Chrome on the first tool call if the profile exists.
-- **Bot detection.** Real Chrome + user-controlled login — not headless. Cloudflare + Google OAuth see a normal session. First login may trigger a Google new-device prompt.
+- **Bot detection.** Visible Chrome is the default for first login and Cloudflare recovery. After login, set `DESIGNER_HEADLESS=1` to reuse the dedicated profile without a visible window; if authentication or Cloudflare blocks it, temporarily relaunch without that variable.
+- **Stealth (default on).** The debug Chrome launches with `--disable-blink-features=AutomationControlled`, so `navigator.webdriver` stays `false` and the automation-controlled surfaces are absent. It's cookie-safe and native — no Docker, no custom engine. Opt out with `DESIGNER_STEALTH=0`. This strips automation *tells* only; it does not spoof the fingerprint (real Chrome already presents a genuine one). Engine-level fingerprint spoofing (canvas/WebGL/UA) is a separate, heavier browser and is out of scope here.
+- **One Chrome build per profile.** The signed-in session in `~/.chrome-designer-profile/` is encrypted with the launching browser's OS keystore key. Opening the same profile with a *different* Chrome build (e.g. Google Chrome vs Chrome for Testing) rewrites that store and silently invalidates the login. Keep `CHROME_BIN` pinned to one build.
 - **`DESIGNER_CDP=9222`** is the default. Export it only when using a different port or when you want the setting explicit for direct CLI calls.
 
 ### Run normal Chrome and Designer together
@@ -82,6 +84,20 @@ export DESIGNER_CDP=9333
 ./bin/designer.mjs setup
 ```
 
+After completing the visible login once, switch the dedicated testing browser
+to fully background operation:
+
+```bash
+export DESIGNER_HEADLESS=1
+./bin/designer.mjs setup
+```
+
+Setup persists `DESIGNER_HEADLESS=1` in the MCP registration. MCP launches
+Chrome with `--headless=new` against the signed-in profile. If Cloudflare blocks
+the page, Designer restarts only Chrome for Testing visibly on that URL and asks
+you to complete verification before retrying. Quit that testing browser later;
+the next MCP call restores the configured headless mode.
+
 Setup stores both variables in the Claude Code MCP registration. Thereafter the
 MCP can auto-launch Chrome for Testing on port 9333 even while normal Chrome is
 running. The testing browser still uses `~/.chrome-designer-profile/`, so its
@@ -91,12 +107,43 @@ Dependency and browser versions above are intentionally exact. Review upstream
 release notes and update the pins in a dedicated PR; do not replace them with
 `latest`, caret, tilde, or wildcard ranges.
 
+### Fortress mode — stealth headless that clears Cloudflare
+
+Headless Chrome puts `HeadlessChrome` in the User-Agent, which Cloudflare
+challenges on claude.ai; native headless cannot get past it. `DESIGNER_BROWSER=fortress`
+drives [Fortress](https://github.com/tiliondev/fortress) — a stealth Chromium
+that presents a coherent Windows persona and clears the challenge headless.
+
+```bash
+export DESIGNER_BROWSER=fortress     # opt in (default: local Chrome)
+export CHROME_BIN="/absolute/path/to/Google Chrome for Testing"   # the signed-in source build
+designer doctor                      # or any command: auto-launches + seeds Fortress
+```
+
+Requirements and behaviour:
+
+- **Docker** (Fortress ships only as a `linux/amd64` image; on Apple Silicon it
+  runs under emulation). Auto-resolved from `PATH` or `~/.docker/bin`; override
+  with `DOCKER_BIN`.
+- **Log in once.** Fortress runs as an ephemeral container that cannot decrypt
+  the macOS profile, so designer carries the login in over loopback CDP: it reads
+  the session from your persistent `~/.chrome-designer-profile/` (via a transient
+  Chrome for Testing) and injects it. You sign in once; reseeds are automatic and
+  silent. `CHROME_BIN` must be the same build that signed in (it holds the key).
+- **Long-lived container.** The seed lasts the container's lifetime; a restart
+  reseeds automatically (~20s). An already-signed-in container is reused in ~5s.
+- Stop it with `designer fortress-stop` (or `docker rm -f designer-fortress`).
+- Overrides: `DESIGNER_FORTRESS_IMAGE`, `DESIGNER_FORTRESS_CONTAINER`.
+
+Fortress is only needed for **headless** stealth. For a visible window, plain
+Chrome for Testing already clears Cloudflare — Fortress adds nothing there.
+
 ## CLI
 
 ```
 designer setup                                       (once per machine)
 designer session --action create --name "X" --key x  start a project
-designer adopt --key x                                adopt an open /design/p/<uuid> tab into a key
+designer adopt --key x [--url https://claude.ai/design/p/<uuid>]  adopt an open project tab into a key
 designer prompt "design the …" --key x               prints 'Taste here: <url>'
 designer prompt - --key x < follow-up.txt            iterate
 designer handoff --key x                             bundle for code implementation
@@ -108,7 +155,14 @@ designer handoff --key x                             bundle for code implementat
 > filling the composer and clicking "Start project". `designer adopt` also binds
 > an already-open `/design/p/<uuid>` tab to a key if you'd rather create by hand.
 
-Every verb has `--help`. `--key <k>` isolates parallel sessions (state at `~/.designer/sessions.json`). Prompts accept positional, `--prompt-file`, or stdin (`-`).
+When more than one project tab is open, `adopt` first reuses a unique prior key
+binding. If there is no unique match, pass the target project's exact
+`https://claude.ai/design/p/<uuid>` URL with `--url`; Designer never closes the
+other tabs or chooses by whichever tab happens to be active.
+
+Every verb has `--help`. `--key <k>` isolates parallel sessions (state at `~/.designer/sessions.json`). In CDP mode each key is pinned to its own Chrome tab, so two agents can update two open design projects concurrently without navigating or closing each other's tab. Prompts accept positional, `--prompt-file`, or stdin (`-`).
+
+Once a key is bound, normal prompts, snapshots, file operations, and handoffs control its pinned tab without activating Chrome, so they can run in the background. Creating a new project, adopting an unbound tab, or recovering a missing/closed tab may bring Chrome forward once while the new target is bound.
 
 ## MCP
 

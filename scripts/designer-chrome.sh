@@ -58,8 +58,20 @@ if pgrep "$PGREP_MODE" "$CHROME_PAT" >/dev/null; then
 fi
 
 echo "[designer-chrome] Launching: $CHROME --remote-debugging-port=$PORT --user-data-dir=$PROFILE"
-echo "[designer-chrome] Sign in to claude.ai in the new window. Then navigate to https://claude.ai/design."
-echo "[designer-chrome] When done, leave this window open. The CDP server runs as long as Chrome runs."
+# Anti-automation flag (stealth) is on by default; DESIGNER_STEALTH=0 opts out.
+# Mirrors stealthChromeArgs() in stealth-mode.ts.
+STEALTH_ARGS=(--disable-blink-features=AutomationControlled)
+if [ "${DESIGNER_STEALTH:-1}" = "0" ] || [ "${DESIGNER_STEALTH:-}" = "false" ]; then
+  STEALTH_ARGS=()
+fi
+HEADLESS_ARGS=()
+if [ "${DESIGNER_HEADLESS:-0}" = "1" ] || [ "${DESIGNER_HEADLESS:-}" = "true" ]; then
+  HEADLESS_ARGS=(--headless=new)
+  echo "[designer-chrome] Headless mode enabled; using the existing signed-in profile."
+else
+  echo "[designer-chrome] Sign in to claude.ai in the new window. Then navigate to https://claude.ai/design."
+  echo "[designer-chrome] When done, leave this window open. The CDP server runs as long as Chrome runs."
+fi
 
 exec "$CHROME" \
   --remote-debugging-port="$PORT" \
@@ -67,4 +79,6 @@ exec "$CHROME" \
   --no-first-run \
   --no-default-browser-check \
   --disable-search-engine-choice-screen \
+  "${STEALTH_ARGS[@]}" \
+  "${HEADLESS_ARGS[@]}" \
   "https://claude.ai/design"

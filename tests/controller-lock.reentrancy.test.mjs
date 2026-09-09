@@ -34,11 +34,11 @@ function between(text, startMark, endMark) {
 // because the behaviour needs a live browser; the acquire/release arithmetic
 // itself is unit-tested in controller-lock.acquire.test.mjs.
 
-test('the lock resource is the SESSION (the active tab), not the key or the project', () => {
+test('the lock resource is the driver session that owns the pinned tab', () => {
   const body = src.slice(src.indexOf('private _lockKey()'), src.indexOf('private _busyHolder()'));
   assert.match(body, /this\.browser\.driverId/, 'lock keys on the driver session');
   assert.ok(!/designUrl/.test(body), 'project root must NOT scope the lock — openGuarded navigates the ACTIVE tab');
-  assert.ok(!/this\.key/.test(body), 'controller key must not scope the lock — keys share one session in CDP mode');
+  assert.ok(!/this\.key/.test(body), 'the controller delegates identity to the browser driver');
 });
 
 test('re-entrancy is per async OPERATION, not per controller instance', () => {

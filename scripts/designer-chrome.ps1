@@ -45,8 +45,20 @@ if (Get-Process -Name chrome -ErrorAction SilentlyContinue) {
 }
 
 Write-Host "[designer-chrome] Launching: $Chrome --remote-debugging-port=$Port --user-data-dir=$Profile"
-Write-Host "[designer-chrome] Sign in to claude.ai in the new window. Then navigate to https://claude.ai/design."
-Write-Host "[designer-chrome] When done, leave this window open. The CDP server runs as long as Chrome runs."
+# Anti-automation flag (stealth) is on by default; DESIGNER_STEALTH=0 opts out.
+# Mirrors stealthChromeArgs() in stealth-mode.ts.
+$StealthArgs = @('--disable-blink-features=AutomationControlled')
+if ($env:DESIGNER_STEALTH -eq '0' -or $env:DESIGNER_STEALTH -eq 'false') {
+  $StealthArgs = @()
+}
+$HeadlessArgs = @()
+if ($env:DESIGNER_HEADLESS -eq '1' -or $env:DESIGNER_HEADLESS -eq 'true') {
+  $HeadlessArgs = @('--headless=new')
+  Write-Host "[designer-chrome] Headless mode enabled; using the existing signed-in profile."
+} else {
+  Write-Host "[designer-chrome] Sign in to claude.ai in the new window. Then navigate to https://claude.ai/design."
+  Write-Host "[designer-chrome] When done, leave this window open. The CDP server runs as long as Chrome runs."
+}
 
 & $Chrome `
   "--remote-debugging-port=$Port" `
@@ -54,4 +66,6 @@ Write-Host "[designer-chrome] When done, leave this window open. The CDP server 
   "--no-first-run" `
   "--no-default-browser-check" `
   "--disable-search-engine-choice-screen" `
+  $StealthArgs `
+  $HeadlessArgs `
   "https://claude.ai/design"

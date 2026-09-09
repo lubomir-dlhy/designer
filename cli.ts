@@ -15,6 +15,7 @@ import { REPO_ROOT } from './repo-root.ts';
 import { runHealth } from './ui-anchors.ts';
 import { PACKAGE_VERSION } from './package-meta.ts';
 import { decodeConsent } from './cli-flags.ts';
+import { resolveDockerBin, fortressDockerStopArgs, FORTRESS_CONTAINER } from './fortress-mode.ts';
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -77,8 +78,9 @@ async function main(): Promise<void> {
       const c = new DesignerController({ key });
       const action = (flags.action as 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt' | 'clear') || 'status';
       const name = flags.name as string | undefined;
+      const url = flags.url as string | undefined;
       const fidelity = flags.fidelity as 'wireframe' | 'highfi' | undefined;
-      console.log(JSON.stringify(await c.session({ action, name, fidelity }), null, 2));
+      console.log(JSON.stringify(await c.session({ action, name, url, fidelity }), null, 2));
       break;
     }
     case 'prompt': {
@@ -110,8 +112,9 @@ async function main(): Promise<void> {
     }
     case 'adopt': {
       const name = (flags.name as string) || (flags._[0] as string | undefined);
+      const url = flags.url as string | undefined;
       const c = new DesignerController({ key });
-      console.log(JSON.stringify(await c.adoptSession(name), null, 2));
+      console.log(JSON.stringify(await c.adoptSession(name, url), null, 2));
       break;
     }
     case 'clear': {
@@ -263,6 +266,20 @@ async function main(): Promise<void> {
         process.exit(sub ? 2 : 0);
       }
       await startMcpServer();
+      break;
+    }
+    case 'fortress-stop': {
+      const docker = resolveDockerBin();
+      if (!docker) {
+        console.error('Docker not found; nothing to stop. (Set DOCKER_BIN if it lives elsewhere.)');
+        process.exit(1);
+      }
+      const r = xspawnSync(docker, fortressDockerStopArgs(), { stdio: 'pipe' });
+      if (r.status === 0) {
+        console.log(`Stopped Fortress container (${FORTRESS_CONTAINER}).`);
+      } else {
+        console.log(`No running Fortress container (${FORTRESS_CONTAINER}).`);
+      }
       break;
     }
     case 'setup': {
@@ -438,6 +455,7 @@ Setup / ops:
 
 Internal:
   mcp serve                                    start MCP stdio server ('claude mcp add' uses this)
+  fortress-stop                                stop the DESIGNER_BROWSER=fortress container
 
 All verbs accept --key <k> for parallel isolation.
 Env: DESIGNER_CDP=9222 (auto-detected after 'designer setup').
@@ -450,6 +468,7 @@ const HELP: Record<string, string> = {
 Flags:
   --action <a>    status (default, read-only) | ensure_ready | resume | create | adopt | clear
   --name <N>      required when --action create; optional label when --action adopt
+  --url <URL>     exact open project URL when adopt needs to disambiguate tabs
   --fidelity <f>  wireframe | highfi (default wireframe) — folded into the creation
                   seed prompt as a directive (the redesigned home has no fidelity toggle)
   --key <k>       stable session key (e.g., feature name), defaults to 'default'
@@ -462,7 +481,7 @@ Examples:
   designer session                                        # read status of 'default'
   designer session --action create --name "feat X" --fidelity highfi --key feat-x
   designer session --action resume --key feat-x
-  designer session --action adopt --name "feat X" --key feat-x
+  designer session --action adopt --name "feat X" --url https://claude.ai/design/p/<uuid> --key feat-x
   designer session --key feat-x                           # status for feat-x`,
 
   prompt: `designer prompt — modify the design. Waits for HTML to change and stabilize.
@@ -571,6 +590,12 @@ Checks: agent-browser on PATH, CDP reachable at DESIGNER_CDP port, a /design tab
 selectors.json present, designer-loop skill installed at ~/.claude/skills/, MCP registration.
 
 Exits with code 2 if any check fails.`,
+
+  'fortress-stop': `designer fortress-stop — stop the Fortress container (DESIGNER_BROWSER=fortress).
+
+Force-removes the '${FORTRESS_CONTAINER}' container. The next designer call with
+DESIGNER_BROWSER=fortress relaunches it and reseeds the login automatically.
+No-op (and exits 0) when no such container is running.`,
 
   health: `designer health [--json] — probe every UI anchor this MCP depends on.
 

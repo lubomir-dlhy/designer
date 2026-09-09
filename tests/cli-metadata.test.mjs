@@ -105,6 +105,14 @@ test('MCP registration persists alternate Chrome and non-default CDP settings', 
     '-e',
     'CHROME_BIN=/opt/chrome-for-testing'
   ]);
+  assert.deepEqual(mcpRegistrationEnv('9333', '/opt/chrome-for-testing', true), [
+    '-e',
+    'DESIGNER_CDP=9333',
+    '-e',
+    'CHROME_BIN=/opt/chrome-for-testing',
+    '-e',
+    'DESIGNER_HEADLESS=1'
+  ]);
   assert.equal(
     mcpManagedEnvMatches(
       'Environment:\n  DESIGNER_CDP=9333\n  CHROME_BIN=/opt/chrome-for-testing',
@@ -114,7 +122,18 @@ test('MCP registration persists alternate Chrome and non-default CDP settings', 
     true
   );
   assert.equal(mcpManagedEnvMatches('Environment:\n', '9333', '/opt/chrome-for-testing'), false);
+  assert.equal(mcpManagedEnvMatches('Environment:\n  DESIGNER_CDP_EXTRA=9333', '9333', undefined), false);
   assert.equal(mcpManagedEnvMatches('Environment:\n  DESIGNER_CDP=9333', '9222', undefined), false);
+  assert.equal(
+    mcpManagedEnvMatches(
+      'Environment:\n  DESIGNER_CDP=9333\n  CHROME_BIN=/opt/chrome-for-testing\n  DESIGNER_HEADLESS=1',
+      '9333',
+      '/opt/chrome-for-testing',
+      true
+    ),
+    true
+  );
+  assert.equal(mcpManagedEnvMatches('Environment:\n  DESIGNER_HEADLESS=1', '9222', undefined, false), false);
 });
 
 test('MCP registration puts the server name before variadic environment flags', () => {

@@ -1,5 +1,6 @@
-import { xspawn } from './cross-platform.ts';
+import { createHash } from 'node:crypto';
 import { agentBrowserCdp } from './cdp-port.ts';
+import { xspawn } from './cross-platform.ts';
 
 const BIN = process.env.DESIGNER_AGENT_BROWSER_BIN || 'agent-browser';
 const DEFAULT_SESSION = process.env.DESIGNER_SESSION_NAME || 'designer';
@@ -25,6 +26,7 @@ export interface SnapshotOptions {
 export interface TabInfo {
   active: boolean;
   index: number;
+  targetId?: string;
   title: string;
   type: string;
   url: string;
@@ -41,12 +43,7 @@ export interface Browser {
   session: string;
   /**
    * The agent-browser session this handle ACTUALLY drives.
-   *
-   * Not the same as `session`: in CDP mode `connectFlags()` scopes the daemon
-   * session by endpoint (`designer-cdp-<port>`), so every controller — whatever
-   * its key — shares one session and therefore one active tab. Anything that
-   * must serialize access to the tab has to key on THIS, not on the caller's
-   * key, or two keys will drive the same tab simultaneously.
+   * CDP mode scopes it by endpoint and Designer key.
    */
   driverId: string;
   run(args: string[], opts?: { input?: string; parseJson?: boolean }): Promise<string>;
@@ -55,7 +52,8 @@ export interface Browser {
   url(): Promise<string>;
   title(): Promise<string>;
   tabs(): Promise<TabInfo[]>;
-  activateTab(index: number): Promise<void>;
+  activateTab(tab: number | string): Promise<void>;
+  newTab(url: string): Promise<void>;
   reload(): Promise<string>;
   cookies(): Promise<CookieInfo[]>;
   snapshot<T = unknown>(opts?: SnapshotOptions): Promise<T>;
@@ -104,7 +102,7 @@ export function createBrowser({
     ...(headed && !cdp ? { AGENT_BROWSER_HEADED: '1' } : {})
   };
 
-  const cdpSessionName = cdp ? `designer-cdp-${cdp.replace(/[^a-zA-Z0-9.-]/g, '_')}` : null;
+  const cdpSessionName = cdp ? cdpDriverSessionName(cdp, session) : null;
 
   function connectFlags(): string[] {
     if (!cdp) return [];
@@ -114,7 +112,7 @@ export function createBrowser({
     // through 0.27.2). Scope the daemon session by endpoint so designer
     // never inherits a connection to some other Chrome — e.g. the user's
     // own agent-browser use against a different port (issue #32 triage).
-    const scope = ['--session', cdpSessionName as string];
+    const scope = ['--session', cdpSessionName as string, '--pin-tab'];
     if (cdp === 'auto' || cdp === '1' || cdp === 'true') return [...scope, '--auto-connect'];
     return [...scope, '--cdp', cdp];
   }
@@ -167,8 +165,11 @@ export function createBrowser({
       }
       return env.data?.tabs ?? [];
     },
-    activateTab: async (index) => {
-      await run(['tab', String(index)]);
+    activateTab: async (tab) => {
+      await run(['tab', String(tab)]);
+    },
+    newTab: async (url) => {
+      await run(['tab', 'new', url]);
     },
     reload: () => run(['reload']),
     cookies: async () => {
@@ -228,4 +229,11 @@ export function createBrowser({
       }
     }
   };
+}
+
+export function cdpDriverSessionName(cdp: string, session: string): string {
+  const endpoint = cdp.replace(/[^a-zA-Z0-9.-]/g, '_').slice(0, 48) || 'cdp';
+  const slug = session.replace(/[^a-zA-Z0-9.-]/g, '_').slice(0, 48) || 'default';
+  const digest = createHash('sha256').update(`${cdp}\0${session}`).digest('hex').slice(0, 12);
+  return `designer-cdp-${endpoint}-${slug}-${digest}`;
 }
