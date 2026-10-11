@@ -33,7 +33,7 @@ jobs:
         with:
           fail-on-severity: moderate
           deny-licenses: GPL-3.0, AGPL-3.0
-      - run: bun run check
+      - run: bun run typecheck
       - run: bun test
       - name: Verify Bun entrypoint
         run: ./bin/designer.mjs --version
