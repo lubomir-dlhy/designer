@@ -6,7 +6,9 @@ import path from 'node:path';
 import { resolveTastingFile, tastingServerArgs } from '../tasting.ts';
 
 test('the tasting preview launches with Bun', () => {
-  assert.deepEqual(tastingServerArgs('/tmp/project', 8765).slice(1), ['--serve', '/tmp/project', '8765']);
+  const args = tastingServerArgs('/tmp/project', 8765);
+  assert.equal(args[0], '--disallow-code-generation-from-strings=strict');
+  assert.deepEqual(args.slice(2), ['--serve', '/tmp/project', '8765']);
 });
 
 test('the tasting server confines reads to the project directory', async () => {

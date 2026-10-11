@@ -116,7 +116,7 @@ const servers = new Map<string, { port: number; pid: number }>();
 const LOOPBACK_HOST = '127.0.0.1';
 
 export function tastingServerArgs(projectDir: string, port: number): string[] {
-  return [fileURLToPath(import.meta.url), '--serve', projectDir, String(port)];
+  return ['--disallow-code-generation-from-strings=strict', fileURLToPath(import.meta.url), '--serve', projectDir, String(port)];
 }
 
 export async function resolveTastingFile(projectDir: string, requestPath: string): Promise<string | null> {
