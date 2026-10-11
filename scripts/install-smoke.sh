@@ -14,7 +14,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Pin the multi-platform manifest digest, not only the mutable image tag.
-DOCKER_IMAGE="${DOCKER_IMAGE:-oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-oven/bun:1.4.3@sha256:ec06c3b6cea04192ae6770c434f668ca41d343ad19fa6472216c7b48be39c598}"
 WORK_HOST="$(mktemp -d -t designer-smoke-XXXXXX)"
 trap 'rm -rf "$WORK_HOST"' EXIT
 
