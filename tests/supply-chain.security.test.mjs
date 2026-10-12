@@ -65,5 +65,5 @@ test('documented external tooling and release tooling are exactly pinned', async
   assert.doesNotMatch(release, /^permissions:\n\s+contents: write\n\s+pull-requests: write\n\s+id-token: write/m);
 
   const smoke = await read('scripts/install-smoke.sh');
-  assert.match(smoke, /oven\/bun:1\.4\.0@sha256:[a-f0-9]{64}/);
+  assert.match(smoke, new RegExp(`oven/bun:${REQUIRED_BUN_VERSION.replaceAll('.', '\\.')}@sha256:[a-f0-9]{64}`));
 });

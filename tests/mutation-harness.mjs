@@ -175,7 +175,7 @@ for (const m of MUTATIONS) {
   let failed = false;
   let detail = '';
   try {
-    execFileSync('bun', ['run', 'check'], { cwd: dir, stdio: 'pipe' });
+    execFileSync('bun', ['run', 'typecheck'], { cwd: dir, stdio: 'pipe' });
   } catch (e) {
     failed = true;
     detail = 'typecheck';

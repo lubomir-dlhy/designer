@@ -25,16 +25,17 @@
   "bin": {
     "designer": "./bin/designer.mjs"
   },
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.3",
   "scripts": {
     "mcp": "bun mcp-server.ts",
     "cli": "bun cli.ts",
     "setup": "bun cli.ts setup",
     "doctor": "bun cli.ts doctor",
-    "test": "bun run check && bun test",
-    "check": "tsc --noEmit",
+    "test": "bun run typecheck && bun test",
+    "typecheck": "bun check",
+    "typecheck:tsc": "tsc --noEmit",
     "security:audit": "bun audit --audit-level=high && bun pm untrusted",
-    "prepack": "bun run check",
+    "prepack": "bun run typecheck",
     "probe": "bun scripts/probe.ts",
     "preflight": "bun scripts/ci-preflight.ts",
     "probe:health": "bun scripts/ci-health.ts",
@@ -45,19 +46,19 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.120.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "cross-spawn": "7.0.6",
     "fflate": "0.8.3",
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/bun": "1.4.0",
+    "@types/bun": "1.4.2",
     "@types/cross-spawn": "6.0.6",
     "@types/node": "26.2.0",
     "typescript": "6.0.3"
   },
   "engines": {
-    "bun": "1.4.0"
+    "bun": "1.4.3"
   },
   "os": [
     "darwin",
