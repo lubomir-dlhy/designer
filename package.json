@@ -46,7 +46,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.120.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "cross-spawn": "7.0.6",
     "fflate": "0.8.3",
     "zod": "4.4.3"
