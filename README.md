@@ -18,7 +18,7 @@ Human describes intent → agent surveys codebase and prompts Claude Design → 
 
 ### Prerequisites
 
-- [Bun 1.4.3](https://bun.com/docs/installation), plus Google Chrome.
+- [Bun 1.4.4](https://bun.com/docs/installation), plus Google Chrome.
 - `agent-browser` 0.35.2 on PATH: `bun add --global --exact agent-browser@0.35.2`.
 
 ### Install from this fork
@@ -36,7 +36,7 @@ The package name reserved for a future registry release is
 
 ### What `designer setup` does
 
-1. Verify Bun 1.4.3 and synchronize dependencies from `bun.lock`.
+1. Verify Bun 1.4.4 and synchronize dependencies from `bun.lock`.
 2. Check `agent-browser` 0.35.2 on PATH.
 3. Ask you to quit normal Chrome, unless `CHROME_BIN` selects a separate Chrome for Testing/Canary executable.
 4. Launch debug Chrome (`--remote-debugging-port=9222`, profile at `~/.chrome-designer-profile/`).

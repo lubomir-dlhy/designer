@@ -25,7 +25,7 @@
   "bin": {
     "designer": "./bin/designer.mjs"
   },
-  "packageManager": "bun@1.4.3",
+  "packageManager": "bun@1.4.4",
   "scripts": {
     "mcp": "bun mcp-server.ts",
     "cli": "bun cli.ts",
@@ -58,7 +58,7 @@
     "typescript": "6.0.3"
   },
   "engines": {
-    "bun": "1.4.3"
+    "bun": "1.4.4"
   },
   "os": [
     "darwin",
