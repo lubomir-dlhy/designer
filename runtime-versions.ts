@@ -1,6 +1,6 @@
 // Reviewed runtime/toolchain pins. Update these only in a dedicated dependency
 // PR together with package.json, README instructions, CI, and verification.
-export const REQUIRED_BUN_VERSION = '1.4.3';
+export const REQUIRED_BUN_VERSION = '1.4.4';
 export const REQUIRED_AGENT_BROWSER_VERSION = '0.35.2';
 
 export function agentBrowserVersionSupported(output: string): boolean {
